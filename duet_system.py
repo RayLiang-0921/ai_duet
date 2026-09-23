@@ -877,110 +877,64 @@ human_in.connect(_extended_human_interrupt)
 # ──────────────────────────────────────────────────────────────────
 # AI 互彈主迴圈
 # ──────────────────────────────────────────────────────────────────
+async def _play_agent_notes(
+    agent: "MRT2Generator",
+    pitches: List[int],
+    port: Any,
+    channel: int,
+    velocity: int,
+    source: str,
+    window: Any,
+    stop_event: asyncio.Event,
+) -> None:
+    """依序播放一個 Agent 生成的音符；無 MRT2 時經 pending buffer 以便人類打斷時清除。"""
+    for pitch in pitches:
+        if stop_event.is_set() or state.mode != SystemState.AI_MODE:
+            break
+        note = MidiNote(channel=channel, pitch=pitch, velocity=velocity, source=source)
+        if agent.has_mrt2:
+            port.send(note)
+            with _sliding_lock:
+                window.append(pitch)
+        else:
+            ai_pending_buffer.push(note)
+            pending = ai_pending_buffer.pop()
+            if pending:
+                port.send(pending)
+                with _sliding_lock:
+                    window.append(pitch)
+        await asyncio.sleep(NOTE_DURATION)
+
+
 async def magenta_duet_task(stop_event: asyncio.Event) -> None:
     log.info("[DuetSystem] MRT2 互彈任務啟動")
 
     while not stop_event.is_set():
         if state.mode == SystemState.AI_MODE:
-            # Agent A — 取得 primer 並生成
             with _sliding_lock:
                 a_primer = list(_melody_window)
+                b_primer = list(_melody_window)
                 if _bass_pitches:
                     bass_hint = [p + 12 for p in _bass_pitches if p + 12 < 80]
                     a_primer = (bass_hint + a_primer)[-SEQUENCE_LEN:]
 
-            # 嘗試 MRT2 音頻生成
-            if agent_a.has_mrt2:
-                audio_data = agent_a.generate_audio(
-                    active_pitches=a_primer[-4:],
-                    onset_pitches=a_primer[-2:],
-                    duration_sec=NOTE_DURATION * 4,
-                )
-                if audio_data is not None:
-                    log.info("[Agent A] MRT2 生成了 %.2f 秒音頻", len(audio_data) / MRT2_SAMPLE_RATE)
-                    # 同時用 MIDI fallback 維持 piano roll 視覺化
-                    for pitch in agent_a.generate(primer=a_primer, length=4):
-                        if stop_event.is_set() or state.mode != SystemState.AI_MODE:
-                            break
-                        note = MidiNote(channel=0, pitch=pitch, velocity=85, source="AI_Melody")
-                        melody_out.send(note)
-                        with _sliding_lock:
-                            _melody_window.append(pitch)
-                        await asyncio.sleep(NOTE_DURATION)
-                else:
-                    # MRT2 生成失敗，用純 fallback
-                    for pitch in agent_a.generate(primer=a_primer, length=4):
-                        if stop_event.is_set() or state.mode != SystemState.AI_MODE:
-                            break
-                        note = MidiNote(channel=0, pitch=pitch, velocity=85, source="AI_Melody")
-                        ai_pending_buffer.push(note)
-                        pending = ai_pending_buffer.pop()
-                        if pending:
-                            melody_out.send(pending)
-                            with _sliding_lock:
-                                _melody_window.append(pitch)
-                        await asyncio.sleep(NOTE_DURATION)
-            else:
-                # 無 MRT2，純 fallback
-                for pitch in agent_a.generate(primer=a_primer, length=4):
-                    if stop_event.is_set() or state.mode != SystemState.AI_MODE:
-                        break
-                    note = MidiNote(channel=0, pitch=pitch, velocity=85, source="AI_Melody")
-                    ai_pending_buffer.push(note)
-                    pending = ai_pending_buffer.pop()
-                    if pending:
-                        melody_out.send(pending)
-                        with _sliding_lock:
-                            _melody_window.append(pitch)
-                    await asyncio.sleep(NOTE_DURATION)
+            # Agent A / B 各只呼叫一次 MRT2，並在執行緒中並行推論（GPU 上可重疊運算，
+            # 也避免阻塞 event loop）
+            a_pitches, b_pitches = await asyncio.gather(
+                asyncio.to_thread(agent_a.generate, primer=a_primer, length=4),
+                asyncio.to_thread(agent_b.generate, primer=b_primer, length=4),
+            )
 
+            await _play_agent_notes(
+                agent_a, a_pitches, melody_out, channel=0, velocity=85,
+                source="AI_Melody", window=_melody_window, stop_event=stop_event,
+            )
             if state.mode != SystemState.AI_MODE:
                 continue
-
-            # Agent B — 類似邏輯
-            with _sliding_lock:
-                b_primer = list(_melody_window)
-
-            if agent_b.has_mrt2:
-                audio_data = agent_b.generate_audio(
-                    active_pitches=b_primer[-4:],
-                    onset_pitches=b_primer[-2:],
-                    duration_sec=NOTE_DURATION * 4,
-                )
-                if audio_data is not None:
-                    log.info("[Agent B] MRT2 生成了 %.2f 秒音頻", len(audio_data) / MRT2_SAMPLE_RATE)
-                    for pitch in agent_b.generate(primer=b_primer, length=4):
-                        if stop_event.is_set() or state.mode != SystemState.AI_MODE:
-                            break
-                        note = MidiNote(channel=1, pitch=pitch, velocity=70, source="AI_Harmony")
-                        harmony_out.send(note)
-                        with _sliding_lock:
-                            _harmony_window.append(pitch)
-                        await asyncio.sleep(NOTE_DURATION)
-                else:
-                    for pitch in agent_b.generate(primer=b_primer, length=4):
-                        if stop_event.is_set() or state.mode != SystemState.AI_MODE:
-                            break
-                        note = MidiNote(channel=1, pitch=pitch, velocity=70, source="AI_Harmony")
-                        ai_pending_buffer.push(note)
-                        pending = ai_pending_buffer.pop()
-                        if pending:
-                            harmony_out.send(pending)
-                            with _sliding_lock:
-                                _harmony_window.append(pitch)
-                        await asyncio.sleep(NOTE_DURATION)
-            else:
-                for pitch in agent_b.generate(primer=b_primer, length=4):
-                    if stop_event.is_set() or state.mode != SystemState.AI_MODE:
-                        break
-                    note = MidiNote(channel=1, pitch=pitch, velocity=70, source="AI_Harmony")
-                    ai_pending_buffer.push(note)
-                    pending = ai_pending_buffer.pop()
-                    if pending:
-                        harmony_out.send(pending)
-                        with _sliding_lock:
-                            _harmony_window.append(pitch)
-                    await asyncio.sleep(NOTE_DURATION)
+            await _play_agent_notes(
+                agent_b, b_pitches, harmony_out, channel=1, velocity=70,
+                source="AI_Harmony", window=_harmony_window, stop_event=stop_event,
+            )
 
         elif state.mode == SystemState.HUMAN_MODE:
             if len(human_buffer) == 0:

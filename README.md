@@ -13,6 +13,8 @@ ai_duet/
 ├── midi_core.py         # 多軌 MIDI 路由、虛擬埠、人類亂入攔截器、Preset Bass 背景軌
 ├── duet_system.py        # MRT2 AI 互彈引擎（CLI 版本，輸出 duet_output.mid）
 ├── ai_duet_web.py         # FastAPI + WebSocket 互動網頁版（主要展示介面，含可彈奏鍵盤 UI）
+├── run_gpu.sh / .bat   # 以 WSL2 + GPU 啟動網頁版（推薦）
+├── tools/ws_latency_check.py  # 量測網頁版每小節是否即時送達
 ├── train_melody.py        # 旋律模型訓練腳本
 ├── ai_duet_prototype.py    # 最早期原型（Markov Chain call-and-response，僅供參考）
 ├── tests/                  # pytest 測試（MIDI 路由、MRT2 生成邏輯，含 mock 與真實模型測試）
@@ -31,7 +33,7 @@ ai_duet/
 |------|------|
 | Python | 3.11+ |
 | OS | Windows 10/11（macOS/Linux 亦可） |
-| 硬體 | 目前僅驗證 **CPU** 推論（無 GPU/TPU 加速），見下方「即時效能」章節 |
+| 硬體 | **建議 NVIDIA GPU（已驗證 RTX 3050 Laptop 4GB，經 WSL2）**；純 CPU 可執行但約慢 9 倍，見「即時效能」 |
 
 ### 主要套件（已於 `venv` 驗證安裝成功，Windows 原生環境可行）
 
@@ -74,6 +76,11 @@ pip install magenta-rt fastapi uvicorn mido note-seq torch scipy numpy resampy
 ```
 
 ### 3a. 執行方式 A — 互動網頁版（推薦，主要展示介面）
+
+**GPU（推薦，可即時演奏）**：雙擊 `run_gpu.bat`，或在 WSL 內執行 `bash run_gpu.sh`。
+第一次需先完成下方「GPU 加速 (WSL2)」的安裝。啟動畫面會顯示 `JAX backend = gpu`。
+
+**CPU（無 GPU 時）**：
 
 ```powershell
 python ai_duet_web.py
@@ -197,18 +204,48 @@ with mido.open_input() as port:
 
 ---
 
+## GPU 加速 (WSL2)
+
+JAX 在 PyPI 上只提供 Linux 的 CUDA 版本，因此 Windows 上需透過 **WSL2** 使用 GPU。
+WSL2 會直接使用 Windows 的 NVIDIA 驅動，不需另外安裝 CUDA toolkit，也不需要 sudo。
+
+```bash
+# 在 WSL (Ubuntu) 內執行，一次性安裝
+curl -LsSf https://astral.sh/uv/install.sh | sh     # 安裝 uv（使用者目錄，免 sudo）
+uv python install 3.11
+uv venv ~/ai_duet_gpu_venv --python 3.11
+source ~/ai_duet_gpu_venv/bin/activate
+uv pip install "jax[cuda12]" magenta-rt fastapi "uvicorn[standard]" mido note-seq scipy numpy resampy
+python -c "import jax; print(jax.devices())"         # 應顯示 CudaDevice(id=0)
+```
+
+`run_gpu.sh` 會自動設定以下環境變數：
+
+| 變數 | 值 | 原因 |
+|------|----|------|
+| `MAGENTA_HOME` | `/mnt/c/Users/ray/Documents/Magenta` | 共用 Windows 已下載的 checkpoint，免重新下載 2.8GB |
+| `XLA_PYTHON_CLIENT_PREALLOCATE` | `false` | JAX 預設預先配置 75% 顯存，4GB 顯卡會 OOM |
+| `XLA_PYTHON_CLIENT_ALLOCATOR` | `platform` | 同上，依需求配置顯存 |
+
+> 必須安裝 `uvicorn[standard]`（含 `websockets`）；只裝 `uvicorn` 時 `/ws` 會回傳 404，網頁無法連線。
+
+---
+
 ## 即時效能 / 已知限制
 
-本機環境僅有 CPU（無 GPU/TPU 加速）。實測 `mrt2_small` 在此環境下的即時因子
-（real-time factor，>1x 代表比即時播放慢）約為 **9–10 倍**：生成 1 秒音訊約需
-9–10 秒運算時間。這代表**目前在純 CPU 環境下無法達到真正零延遲的即時演奏**，
-網頁版採用 prefetch/double-buffer 機制隱藏部分延遲，但底層生成速度本身仍是瓶頸。
-若要達到真正即時，需要 GPU 加速、更小的模型、或調整生成策略。
+`mrt2_small` 實測（real-time factor，>1x 代表比即時播放慢）：
+
+| 測試 | CPU（Windows 原生） | GPU（RTX 3050, WSL2） |
+|------|------|------|
+| `generate()` 原始速度 | 8.5–9.2x | **0.58–0.87x** |
+| 網頁版 60 秒實際演奏（`tools/ws_latency_check.py`） | 跟不上 | **29/29 小節準時送達，穩態 1.01x，0 小節延遲** |
+
+GPU 版本搭配網頁版的 prefetch 佇列（預先生成 2 小節）即可穩定即時演奏；每小節
+（120 BPM 時 2 秒）中由 MRT2 生成的音訊長度為 0.8 秒。
+注意事項：4GB 顯存很緊，載入時會出現 XLA `ran out of memory ... retrying` 警告但會自動恢復；
+演奏時請避免同時執行其他吃 GPU 的程式。模型首次載入約 1–2 分鐘。
 
 其他已知問題：
-- `duet_system.py` 的 `magenta_duet_task` 目前對每個 Agent 呼叫了兩次獨立的 MRT2
-  推論（一次 `generate_audio()` 結果被丟棄，只用於 log；一次 `generate()` 才是實際
-  使用的音符來源），造成不必要的運算浪費。
 - Audio Cloning 功能目前上傳檔案未經解碼即直接送入模型，僅支援 headerless
   float32 PCM 原始資料。
 

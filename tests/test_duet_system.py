@@ -200,7 +200,7 @@ class TestMRT2GeneratorWithMock:
         )
         result = gen.generate_audio(active_pitches=[60, 64], onset_pitches=[60], duration_sec=1.0)
         assert result is not None
-        assert len(result) == 48000
+        assert result.shape == (2, 48000)  # mono is normalized to stereo
         mock_mrt.generate.assert_called_once()
 
     def test_generate_audio_failure_returns_none(self):
