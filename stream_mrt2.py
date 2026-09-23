@@ -34,7 +34,12 @@ def generator() -> None:
             frames=CHUNK_FRAMES,
             state=state,
         )
-        audio_q.put(wav.samples)  # float32 [N, 2]；佇列滿時會等待
+        while not stop.is_set():  # float32 [N, 2]；佇列滿時等待
+            try:
+                audio_q.put(wav.samples, timeout=0.5)
+                break
+            except queue.Full:
+                continue
 
 
 def player() -> None:
@@ -49,8 +54,10 @@ def player() -> None:
         pa.drain()
 
 
-threading.Thread(target=generator, daemon=True).start()
-threading.Thread(target=player, daemon=True).start()
+gen_thread = threading.Thread(target=generator)
+play_thread = threading.Thread(target=player)
+gen_thread.start()
+play_thread.start()
 
 print("播放中。輸入新的風格文字後按 Enter 即可切換（例如：funky slap bass, 100bpm），輸入 q 結束。")
 while True:
@@ -61,3 +68,6 @@ while True:
         style = mrt.embed_style(text)
         print(f"   下一段切換為：{text}")
 stop.set()
+# 等 GPU 上正在跑的 generate() 結束再離開，否則 JAX 會在程式關閉時 abort (core dump)
+gen_thread.join()
+play_thread.join()
