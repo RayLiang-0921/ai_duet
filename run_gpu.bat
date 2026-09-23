@@ -1,4 +1,5 @@
 @echo off
-REM 從 Windows 以 WSL2 GPU 模式啟動 AI Duet 網頁版，完成後開啟 http://localhost:8000
+REM Start the AI Duet web app on the GPU via WSL2, then open http://localhost:8000
+chcp 65001 >nul
 wsl.exe -e bash -lc "cd /mnt/d/Projects/ai_duet && bash run_gpu.sh"
 pause
