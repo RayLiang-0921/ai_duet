@@ -14,6 +14,7 @@ ai_duet/
 ├── duet_system.py        # MRT2 AI 互彈引擎（CLI 版本，輸出 duet_output.mid）
 ├── ai_duet_web.py         # FastAPI + WebSocket 互動網頁版（主要展示介面，含可彈奏鍵盤 UI）
 ├── run_gpu.sh / .bat   # 以 WSL2 + GPU 啟動網頁版（推薦）
+├── stream_mrt2.py      # MRT2 無限串流播放（run_stream_gpu.sh / .bat 以 GPU 執行）
 ├── tools/ws_latency_check.py  # 量測網頁版每小節是否即時送達
 ├── train_melody.py        # 旋律模型訓練腳本
 ├── ai_duet_prototype.py    # 最早期原型（Markov Chain call-and-response，僅供參考）
@@ -226,6 +227,18 @@ python -c "import jax; print(jax.devices())"         # 應顯示 CudaDevice(id=0
 | `MAGENTA_HOME` | `/mnt/c/Users/ray/Documents/Magenta` | 共用 Windows 已下載的 checkpoint，免重新下載 2.8GB |
 | `XLA_PYTHON_CLIENT_PREALLOCATE` | `false` | JAX 預設預先配置 75% 顯存，4GB 顯卡會 OOM |
 | `XLA_PYTHON_CLIENT_ALLOCATOR` | `platform` | 同上，依需求配置顯存 |
+
+### GPU 串流播放腳本（`stream_mrt2.py`）
+
+雙擊 `run_stream_gpu.bat`：MRT2 在 GPU 上邊生成邊播放，可隨時輸入文字切換風格。
+WSL 的聲音經 WSLg 內建 PulseAudio 送到 Windows 喇叭，需先（免 sudo）取得 libpulse：
+
+```bash
+mkdir -p ~/pulse_libs/deb && cd ~/pulse_libs/deb
+apt-get download libpulse0 libsndfile1 libx11-xcb1 libasyncns0 libflac8 libogg0 libopus0     libvorbis0a libvorbisenc2 libx11-6 libxcb1 libxau6 libxdmcp6 libbsd0 libmd0
+for f in *.deb; do dpkg -x "$f" ~/pulse_libs/root; done
+uv pip install pasimple
+```
 
 > 必須安裝 `uvicorn[standard]`（含 `websockets`）；只裝 `uvicorn` 時 `/ws` 會回傳 404，網頁無法連線。
 
