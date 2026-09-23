@@ -9,18 +9,28 @@
   - melody/bass 的 audio 欄位非空          → 真的是 MRT2 生成的音訊，不是 fallback
 """
 import asyncio
+import base64
+import io
 import json
+import wave
 import sys
 import time
 
 import websockets
 
 
+def audio_seconds(b64: str) -> float:
+    if not b64:
+        return 0.0
+    with wave.open(io.BytesIO(base64.b64decode(b64))) as w:
+        return w.getnframes() / w.getframerate()
+
+
 async def main(seconds: float, url: str) -> None:
     async with websockets.connect(url, max_size=None) as ws:
         t0 = time.time()
         last = None
-        gaps, rows = [], []
+        gaps, rows, coverage = [], [], []
         sent_human = False
         while time.time() - t0 < seconds:
             try:
@@ -35,13 +45,15 @@ async def main(seconds: float, url: str) -> None:
             gap = None if last is None else now - last
             last = now
             mel, bass = msg["melody"], msg["bass"]
+            mel_sec = audio_seconds(mel["audio_base64"])
+            coverage.append(mel_sec / dur)
             rows.append((msg["measure_index"], now - t0, gap, dur, mel["agent"],
                          bool(mel["audio_base64"]), bool(bass["audio_base64"]),
                          len(mel["events"])))
             g = "  -  " if gap is None else f"{gap:5.2f}"
             print(f"小節 {msg['measure_index']:3d}  t={now - t0:6.2f}s  間隔={g}s  小節長={dur:.2f}s  "
                   f"{mel['agent']:8s} MRT2音訊: melody={'Y' if mel['audio_base64'] else 'N'} "
-                  f"bass={'Y' if bass['audio_base64'] else 'N'}  音符={len(mel['events'])}", flush=True)
+                  f"bass={'Y' if bass['audio_base64'] else 'N'}  旋律音訊={mel_sec:.2f}s  音符={len(mel['events'])}", flush=True)
             if gap is not None:
                 gaps.append((gap, dur))
             # 過了一半時間模擬人類彈奏 C-E-G，驗證人類插入的路徑也能即時
@@ -64,6 +76,7 @@ async def main(seconds: float, url: str) -> None:
     print(f"第一小節到達時間（含暖機）: {first:.2f}s")
     print(f"穩態平均間隔: {avg_gap:.2f}s   小節長: {avg_dur:.2f}s   比值: {avg_gap / avg_dur:.2f}x (≤1.0 = 即時)")
     print(f"延遲超過 10% 的小節: {late}/{len(steady)}")
+    print(f"旋律音訊覆蓋小節比例: 平均 {100 * sum(coverage) / len(coverage):.0f}%（100% = 整小節都有聲音）")
     print(f"MRT2 真實音訊小節: {sum(1 for r in rows if r[5])}/{len(rows)}")
 
 

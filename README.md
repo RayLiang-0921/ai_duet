@@ -238,10 +238,18 @@ python -c "import jax; print(jax.devices())"         # 應顯示 CudaDevice(id=0
 | 測試 | CPU（Windows 原生） | GPU（RTX 3050, WSL2） |
 |------|------|------|
 | `generate()` 原始速度 | 8.5–9.2x | **0.58–0.87x** |
-| 網頁版 60 秒實際演奏（`tools/ws_latency_check.py`） | 跟不上 | **29/29 小節準時送達，穩態 1.01x，0 小節延遲** |
+| 一整小節（2 秒）音訊，單一串流 | — | **0.59x** |
+| 一整小節，Bass + Melody 兩條串流 | — | 1.18x（跟不上） |
+| 網頁版 60 秒實際演奏（`tools/ws_latency_check.py`） | 跟不上 | **30/30 小節準時、間隔 2.00s、旋律覆蓋 100% 小節** |
 
-GPU 版本搭配網頁版的 prefetch 佇列（預先生成 2 小節）即可穩定即時演奏；每小節
-（120 BPM 時 2 秒）中由 MRT2 生成的音訊長度為 0.8 秒。
+單張 GPU 上多條 MRT2 串流會排隊執行，不會真正並行；增加顯存配置也不會變快
+（`platform` / BFC allocator 皆為 0.59–0.60x，預先配置 85% 顯存則 OOM）。因此網頁版預設：
+
+- **Melody（Agent A/B 輪流）**：MRT2 生成**整個小節**的音訊
+- **Bass**：音符生成器 + 瀏覽器合成器（設定 `AI_DUET_MRT2_BASS=1` 可改回 MRT2，需要更快的 GPU）
+- 小節以絕對時間排程送出，避免累積漂移造成片段之間的空隙
+
+可用 `python tools/gpu_measure_bench.py`（WSL GPU venv）重現上述 GPU 數據。
 注意事項：4GB 顯存很緊，載入時會出現 XLA `ran out of memory ... retrying` 警告但會自動恢復；
 演奏時請避免同時執行其他吃 GPU 的程式。模型首次載入約 1–2 分鐘。
 

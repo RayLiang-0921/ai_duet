@@ -23,6 +23,12 @@ import time
 
 jax_pool = ThreadPoolExecutor(max_workers=4)
 
+# 單張 GPU 上多個 MRT2 串流會排隊執行（不會真正並行）。RTX 3050 實測：一條串流生成
+# 一整小節約需 0.59x 小節長，Bass+Melody 兩條則需 1.18x（跟不上）。因此預設只讓
+# Melody 用 MRT2 生成完整小節，Bass 改用音符生成器 + 瀏覽器合成器；較快的 GPU 可設
+# AI_DUET_MRT2_BASS=1 讓 Bass 也使用 MRT2。
+MRT2_BASS = os.environ.get("AI_DUET_MRT2_BASS", "0") == "1"
+
 try:
     from duet_system import (
         agent_a as mrt2_agent_a,
@@ -1083,6 +1089,12 @@ html_content = """
                             const fallTime = measureRecvToneTime + (ev.play_delay_sec || 0);
                             const hitTime = fallTime + FALL_DURATION;
                             const noteNum = ev.note;
+                            // 無 MRT2 Bass 音訊時，以合成器演奏 Bass 音符
+                            if (!data.bass.audio_base64) {
+                                bassSynth.triggerAttackRelease(
+                                    Tone.Frequency(noteNum, 'midi').toFrequency(), ev.duration, hitTime
+                                );
+                            }
                             if (noteNum >= startMidi && noteNum <= endMidi && keyPos[noteNum]) {
                                 const heightVh = (ev.duration / FALL_DURATION) * 85;
                                 const totalDistance = 85 + heightVh;
@@ -1540,7 +1552,8 @@ async def websocket_music_loop(websocket: WebSocket):
             step_duration = beat_sec / 4.0
             steps_per_measure = 16
             measure_sec = steps_per_measure * step_duration
-            gen_duration = min(0.8, measure_sec)
+            # 生成整個小節長度的音訊，避免旋律播完後出現空白
+            gen_duration = measure_sec
 
             # 1. 鼓點事件
             events_drum = []
@@ -1574,7 +1587,7 @@ async def websocket_music_loop(websocket: WebSocket):
 
             # 3. 同時並行生成 Bass 與 Melody (Concurrent Inference via asyncio.gather)
             async def generate_bass_task():
-                if mrt2_agent_bass and mrt2_agent_bass.has_mrt2:
+                if MRT2_BASS and mrt2_agent_bass and mrt2_agent_bass.has_mrt2:
                     raw = await loop.run_in_executor(
                         jax_pool,
                         functools.partial(mrt2_agent_bass.generate_audio, duration_sec=gen_duration)
@@ -1655,6 +1668,7 @@ async def websocket_music_loop(websocket: WebSocket):
     producer_task = asyncio.create_task(measure_producer())
 
     try:
+        next_send = None  # 以絕對時間排程，避免每小節累積傳送耗時造成拍點漂移與音訊空隙
         while session_active.is_set():
             bundle = await bundle_queue.get()
             if not session_active.is_set():
@@ -1667,7 +1681,11 @@ async def websocket_music_loop(websocket: WebSocket):
                   f"{bundle['melody']['agent']}({len(bundle['melody']['events'])}音符)")
 
             # 精確等待本小節播放時間，維持完美音樂律動與無縫接棒
-            await asyncio.sleep(bundle["measure_duration"])
+            now = loop.time()
+            if next_send is None or now > next_send + bundle["measure_duration"]:
+                next_send = now  # 首小節或生成落後過多時重新對齊
+            next_send += bundle["measure_duration"]
+            await asyncio.sleep(max(0.0, next_send - loop.time()))
 
     except Exception as e:
         print(f"Session closed: {e}")
