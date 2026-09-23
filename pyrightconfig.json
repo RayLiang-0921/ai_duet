@@ -1,0 +1,11 @@
+{
+  "typeCheckingMode": "basic",
+  "venvPath": ".",
+  "venv": "venv",
+  "pythonVersion": "3.11",
+  "reportPrivateImportUsage": "none",
+  "reportMissingModuleSource": "none",
+  "reportMissingImports": "warning",
+  "reportUnknownMemberType": "none",
+  "useLibraryCodeForTypes": true
+}

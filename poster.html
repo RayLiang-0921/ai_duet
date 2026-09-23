@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Grand Piano Duet 海報</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: #c9d6e3;
+            font-family: "微軟正黑體", "Noto Sans TC", sans-serif;
+            display: flex;
+            justify-content: center;
+            padding: 0;
+        }
+
+        /* A0 比例：900 × 1273 px ≈ 1:1.414 */
+        .poster {
+            width: 900px;
+            height: 1273px;
+            background: #f4f4f4;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(160deg, #c6d9f0 0%, #9dbde8 100%);
+            padding: 10px 20px 8px;
+            text-align: center;
+            border-bottom: 3px solid #4a6fa5;
+            flex-shrink: 0;
+        }
+        .header h1 { font-size: 22px; color: #1a1a2e; letter-spacing: 0.5px; margin-bottom: 4px; }
+        .header .authors { font-size: 13px; margin-bottom: 2px; }
+        .header .affiliations { font-size: 11px; color: #444; margin-bottom: 2px; }
+        .header .advisor { font-size: 12px; font-weight: bold; color: #1a1a2e; }
+        .tag { display:inline-block; background:#5b4cdb; color:white; border-radius:10px; padding:1px 8px; font-size:10px; margin:2px; }
+        .tag.orange { background:#d4600a; }
+        .tag.blue   { background:#1565c0; }
+        .tag.green  { background:#276221; }
+
+        /* 主體：四欄式垂直排列，用 flex 填滿剩餘高度 */
+        .body { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+
+        /* 兩行並排 */
+        .row { display: flex; flex: 1; }
+        .row > .col { flex: 1; display: flex; flex-direction: column; border-right: 1px solid #ccc; }
+        .row > .col:last-child { border-right: none; }
+
+        .sec-title {
+            color: white; font-size: 13px; font-weight: bold;
+            padding: 4px 10px; letter-spacing: 0.5px; flex-shrink: 0;
+        }
+        .sec-content {
+            flex: 1; padding: 7px 10px; font-size: 11px; line-height: 1.5; overflow: hidden;
+        }
+
+        /* 顏色 */
+        .obj   > .sec-title { background: #5b4cdb; }
+        .obj   > .sec-content { background: #edeaff; }
+        .meth  > .sec-title { background: #d4600a; }
+        .meth  > .sec-content { background: #fff3e0; }
+        .res   > .sec-title { background: #1565c0; }
+        .res   > .sec-content { background: #e3f2fd; }
+        .concl > .sec-title { background: #276221; }
+        .concl > .sec-content { background: #e8f5e9; }
+
+        .sub { font-size: 12px; font-weight: bold; margin: 5px 0 2px;
+               border-left: 3px solid #888; padding-left: 6px; color: #1a1a2e; }
+        .obj   .sub { border-color: #5b4cdb; }
+        .meth  .sub { border-color: #d4600a; }
+        .res   .sub { border-color: #1565c0; }
+        .concl .sub { border-color: #276221; }
+
+        ul { padding-left: 14px; margin: 2px 0 4px; }
+        li { margin-bottom: 2px; }
+
+        code {
+            background: #fff; border: 1px solid #ccc; border-radius: 2px;
+            padding: 0 3px; font-size: 10px; color: #c0392b; font-family: Consolas, monospace;
+        }
+
+        pre.snippet {
+            background: #1e1e1e; color: #d4d4d4; border-radius: 4px;
+            padding: 5px 8px; font-size: 9.5px; line-height: 1.45;
+            font-family: Consolas, monospace; margin: 4px 0; overflow: hidden;
+        }
+        .kw { color: #569cd6; } .cm { color: #6a9955; } .num { color: #b5cea8; }
+
+        .flowchart { display:flex; align-items:center; flex-wrap:wrap; gap:3px; margin:4px 0; justify-content:center; }
+        .flow-box { background:white; border:1.5px solid #d4600a; border-radius:4px; padding:3px 6px; font-size:9px; font-weight:bold; text-align:center; }
+        .flow-arrow { color:#d4600a; font-size:14px; font-weight:bold; }
+
+        table.cmp { width:100%; border-collapse:collapse; font-size:9.5px; margin-top:4px; }
+        table.cmp th { background:#1565c0; color:white; padding:3px 5px; }
+        table.cmp td { background:white; border:1px solid #b3d4f5; padding:3px 5px; vertical-align:top; }
+        table.cmp tr:nth-child(even) td { background:#f0f7ff; }
+
+        .piano-demo {
+            background:#111; border-radius:4px; height:65px; position:relative; overflow:hidden; margin:4px 0;
+        }
+        .rn { position:absolute; border-radius:2px; opacity:0.9; }
+        .rna { background:linear-gradient(180deg,#34ace0,#227093); }
+        .rnb { background:linear-gradient(180deg,#f39c12,#d35400); }
+        .rnh { background:linear-gradient(180deg,#2ed573,#17a34a); }
+        .pkeys {
+            position:absolute; bottom:0; left:0; right:0; height:12px;
+            background:repeating-linear-gradient(90deg,#fdfdfd 0px,#fdfdfd 9px,#222 9px,#222 10px,#fdfdfd 10px,#fdfdfd 14px,#222 14px,#222 15px,#fdfdfd 15px,#fdfdfd 20px,#222 20px,#222 21px,#fdfdfd 21px,#fdfdfd 29px);
+            border-top:1px solid #555;
+        }
+        .legend { display:flex; gap:8px; font-size:10px; margin:3px 0; }
+        .ld { width:10px;height:10px;border-radius:2px;display:inline-block;vertical-align:middle;margin-right:2px; }
+
+        blockquote { border-left:3px solid #276221; background:white; padding:4px 8px; font-style:italic; font-size:10.5px; margin:4px 0; color:#333; }
+
+        .refs { padding:5px 14px; font-size:9px; color:#555; background:#e8e8e8; border-top:1.5px solid #aaa; flex-shrink:0; }
+    </style>
+</head>
+<body>
+<div class="poster">
+
+    <!-- 標題 -->
+    <div class="header">
+        <h1>AI Grand Piano Duet：以馬可夫鏈實現人機即興合奏系統</h1>
+        <div class="authors">作者一 <sup>1</sup>，作者二 <sup>2</sup>，作者三 <sup>1</sup>，作者四 <sup>2</sup></div>
+        <div class="affiliations"><sup>1</sup> 資訊科學系 &nbsp; <sup>2</sup> 資訊管理系 &nbsp;｜&nbsp; 指導老師：OOO</div>
+        <div style="margin-top:5px;">
+            <span class="tag">Markov Chain</span>
+            <span class="tag orange">FastAPI + WebSocket</span>
+            <span class="tag blue">Tone.js</span>
+            <span class="tag green">即時人機互動</span>
+        </div>
+    </div>
+
+    <!-- 主體 -->
+    <div class="body">
+        <!-- 上半：目的 + 方法 -->
+        <div class="row">
+
+            <!-- 目的 -->
+            <div class="col obj">
+                <div class="sec-title">目的</div>
+                <div class="sec-content">
+                    以輕量的<strong>馬可夫鏈</strong>作為決策核心，建構兩個能<strong>即時學習、相互適應</strong>的音樂代理，讓它們在鋼琴上進行無限的 <strong>Call and Response</strong> 對話，並開放人類即時介入合奏。
+
+                    <div class="sub">研究問題</div>
+                    <ul>
+                        <li>僅用統計轉移機率，能否產出具音樂性的旋律？</li>
+                        <li>兩個代理聆聽彼此，對話是否會收斂或演化？</li>
+                        <li>人類介入後，AI 回應能否自然融入人類音符？</li>
+                    </ul>
+
+                    <div class="sub">系統目標</div>
+                    <ul>
+                        <li>Agent A：C 大調（穩定和聲）；Agent B：G 混合利底亞調（藍調色彩）</li>
+                        <li>Web 版支援 24 種調性，可即時切換不中斷</li>
+                        <li>人類透過鍵盤即時彈奏，下一小節 Agent 自動學習</li>
+                        <li>前端 Piano Roll 視覺化下落式音符動畫</li>
+                    </ul>
+
+                    <blockquote>讓 AI 演奏不像「自動播放」，而是有如真正在聆聽的即興樂手。</blockquote>
+                </div>
+            </div>
+
+            <!-- 方法 -->
+            <div class="col meth">
+                <div class="sec-title">方法 / 系統設計</div>
+                <div class="sec-content">
+
+                    <div class="sub">整體資料流程</div>
+                    <div class="flowchart">
+                        <div class="flow-box">選擇調性<br>/ BPM</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-box">MusicAgent<br>計算事件</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-box">WebSocket<br>推送</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-box">Tone.js<br>播放+動畫</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-box">listen_and<br>_learn()</div>
+                    </div>
+
+                    <div class="sub">① 馬可夫鏈核心</div>
+                    記憶體為巢狀字典，儲存「音符 A 後接 B 的次數」，取樣時以次數加權：
+<pre class="snippet"><span class="cm"># 聆聽後更新轉移矩陣</span>
+self.memory[cur][nxt] += 1  <span class="cm"># 累積權重</span>
+
+<span class="cm"># 生成：70% 加權抽樣，30% 隨機游走</span>
+<span class="kw">if</span> cur <span class="kw">in</span> self.memory <span class="kw">and</span> random() &lt; <span class="num">0.7</span>:
+    next_note = choices(keys, weights=weights)[<span class="num">0</span>]
+<span class="kw">else</span>:
+    idx += choice([<span class="num">-2</span>,<span class="num">-1</span>,<span class="num">0</span>,<span class="num">1</span>,<span class="num">2</span>])</pre>
+
+                    <div class="sub">② 和弦骨架引導（80/20）</div>
+                    每小節隨機選取 I/IV/V/VI 級三和弦為骨架；Agent 80% 機率選和弦音確保和諧，20% 選非和弦音增加張力。
+
+                    <div class="sub">③ 鼓聲 + 人類互動</div>
+                    大鼓 step 0,8；軍鼓 step 4,12（4/4 拍）。鍵盤 <code>ASDFGHJK</code> / <code>WETYU</code>，按 <code>Z/X</code> 切八度；彈錯音閃紅燈防呆，後端下一小節納入學習。
+                </div>
+            </div>
+        </div>
+
+        <!-- 下半：結果 + 結論 -->
+        <div class="row">
+
+            <!-- 結果 -->
+            <div class="col res">
+                <div class="sec-title">結果</div>
+                <div class="sec-content">
+
+                    <div class="sub">Piano Roll 視覺化示意</div>
+                    <div class="piano-demo">
+                        <div class="rn rna" style="left:5%;top:8%;width:7%;height:18%;"></div>
+                        <div class="rn rna" style="left:14%;top:20%;width:5%;height:16%;"></div>
+                        <div class="rn rna" style="left:22%;top:12%;width:8%;height:18%;"></div>
+                        <div class="rn rna" style="left:35%;top:6%;width:6%;height:15%;"></div>
+                        <div class="rn rna" style="left:55%;top:18%;width:7%;height:17%;"></div>
+                        <div class="rn rnb" style="left:8%;top:45%;width:6%;height:18%;"></div>
+                        <div class="rn rnb" style="left:18%;top:56%;width:8%;height:20%;"></div>
+                        <div class="rn rnb" style="left:30%;top:48%;width:5%;height:16%;"></div>
+                        <div class="rn rnb" style="left:42%;top:40%;width:9%;height:18%;"></div>
+                        <div class="rn rnb" style="left:65%;top:50%;width:7%;height:18%;"></div>
+                        <div class="rn rnh" style="left:47%;top:60%;width:5%;height:22%;"></div>
+                        <div class="rn rnh" style="left:75%;top:58%;width:6%;height:20%;"></div>
+                        <div class="pkeys"></div>
+                    </div>
+                    <div class="legend">
+                        <span><span class="ld" style="background:#34ace0;"></span>Agent A（藍）</span>
+                        <span><span class="ld" style="background:#f39c12;"></span>Agent B（橘）</span>
+                        <span><span class="ld" style="background:#2ed573;"></span>人類輸入（綠）</span>
+                    </div>
+
+                    <div class="sub">Prototype vs. Web 版比較</div>
+                    <table class="cmp">
+                        <tr><th>項目</th><th>Prototype</th><th>Web 版</th></tr>
+                        <tr><td>生成引擎</td><td>Markov 70/30</td><td>Markov + 和弦骨架 40/60</td></tr>
+                        <tr><td>音色</td><td>MIDI Velocity</td><td>Tone.js Sampler + Filter</td></tr>
+                        <tr><td>人類互動</td><td>按鍵停止</td><td>即時彈奏 + 防呆 + 學習</td></tr>
+                        <tr><td>調性</td><td>固定 2 種</td><td>24 種即時切換</td></tr>
+                        <tr><td>鼓聲</td><td>無</td><td>4/4 大鼓+軍鼓</td></tr>
+                        <tr><td>輸出</td><td>.mid 匯出</td><td>WebSocket 串流</td></tr>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 結論 -->
+            <div class="col concl">
+                <div class="sec-title">結論</div>
+                <div class="sec-content">
+                    <div class="sub">主要發現</div>
+                    <ul>
+                        <li>一階馬可夫鏈 + 音階引導，在多次對話後產生旋律「記憶感」，出現慣用樂句的雛形。</li>
+                        <li>和弦骨架（80% 和弦音 / 20% 非和弦音）有效降低不和諧感，聆聽體驗接近真實即興。</li>
+                        <li>人類插嘴後三方對話自然過渡，無明顯斷裂感；WebSocket 延遲 &lt; 50ms。</li>
+                    </ul>
+
+                    <div class="sub">未來展望</div>
+                    <ul>
+                        <li>升級至<strong>二/三階馬可夫鏈</strong>，捕捉更長樂句連貫性</li>
+                        <li>以 <strong>LSTM / Transformer</strong> 取代，學習複雜音樂結構</li>
+                        <li>加入<strong>情感參數</strong>（緊張度、速度斜率）調控演奏情緒</li>
+                        <li>多人 WebSocket，多位人類 + 多 AI 共同即興合奏</li>
+                        <li>整合真實鋼琴 MIDI 輸入，與真實樂手對奏</li>
+                    </ul>
+
+                    <blockquote>這場人機音樂對話才剛開始——每個小節都是一次全新的即興。</blockquote>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 參考資料 -->
+    <div class="refs">
+        <strong>技術棧 / 參考</strong>：FastAPI ｜ Tone.js 14.x ｜ mido 1.3.x ｜ python-pptx ｜
+        Shannon, C.E. (1948). A Mathematical Theory of Communication. <em>Bell System Technical Journal</em>, 27(3), 379–423.
+    </div>
+
+</div>
+</body>
+</html>
