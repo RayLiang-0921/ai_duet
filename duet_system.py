@@ -199,6 +199,8 @@ class MRT2Generator:
         self._mrt2 = mrt2_system
         self._style_embedding: Optional[np.ndarray] = None
         self._style_tokens: Optional[List[int]] = None
+        # 本 Agent 自己的風格（文字 / 克隆音訊），Prompt Mixing 以此為基準，避免重複混合後越飄越遠
+        self._base_embedding: Optional[np.ndarray] = None
         self._state: Optional[Any] = None  # MRT2 streaming state
 
         self._temperature: float = DEFAULT_TEMP
@@ -208,9 +210,7 @@ class MRT2Generator:
         # 初始化 style embedding 與 pre-tokenization
         if self._mrt2 is not None:
             try:
-                self._style_embedding = self._mrt2.embed_style(style_prompt)
-                if hasattr(self._mrt2, "tokenize_style"):
-                    self._style_tokens = self._mrt2.tokenize_style(self._style_embedding).tolist()
+                self._set_style(self._mrt2.embed_style(style_prompt))
                 log.info("[%s] Style embedding & tokens 生成完成 ('%s')", self.name, style_prompt)
             except Exception as e:
                 log.warning("[%s] Style embedding 失敗: %s", self.name, e)
@@ -220,6 +220,21 @@ class MRT2Generator:
             self.name,
             "MRT2-JAX" if self._mrt2 else "Fallback-Random",
         )
+
+    def _set_style(self, embedding: Any, is_base: bool = True) -> None:
+        """設定風格 embedding 並同步更新 tokens。
+
+        generate 會優先使用 _style_tokens，所以只改 _style_embedding 不會生效。
+        """
+        self._style_embedding = embedding
+        self._style_tokens = None
+        if hasattr(self._mrt2, "tokenize_style"):
+            try:
+                self._style_tokens = self._mrt2.tokenize_style(embedding).tolist()
+            except Exception as e:
+                log.warning("[%s] Style tokenize 失敗，改用 embedding: %s", self.name, e)
+        if is_base:
+            self._base_embedding = embedding
 
     # ── 溫度自動調節 ──────────────────────────────────────────────
     def _update_temperature(self, pitch: int) -> None:
@@ -401,9 +416,7 @@ class MRT2Generator:
             return
         with self._lock:
             try:
-                self._style_embedding = self._mrt2.embed_style(prompt)
-                if hasattr(self._mrt2, "tokenize_style"):
-                    self._style_tokens = self._mrt2.tokenize_style(self._style_embedding).tolist()
+                self._set_style(self._mrt2.embed_style(prompt))
                 self.style_prompt = prompt
                 self._state = None  # 風格改變，重設 state
                 log.info("[%s] 風格已更新 → '%s'", self.name, prompt)
@@ -426,9 +439,7 @@ class MRT2Generator:
                 else:
                     synth_embedding = self._mrt2.embed_style(prompt)
 
-                self._style_embedding = synth_embedding
-                if hasattr(self._mrt2, "tokenize_style"):
-                    self._style_tokens = self._mrt2.tokenize_style(self._style_embedding).tolist()
+                self._set_style(synth_embedding)
                 self.style_prompt = prompt
                 self._state = None
                 log.info("[%s] Text-to-Synth 完成 → '%s'", self.name, prompt)
@@ -482,7 +493,7 @@ class MRT2Generator:
                     log.warning("[%s] MRT2 不支援 Audio Cloning", self.name)
                     return None
 
-                self._style_embedding = cloned_embedding
+                self._set_style(cloned_embedding)
                 self.style_prompt = f"[cloned_audio: {len(audio_samples)} samples @ {sample_rate}Hz]"
                 self._state = None
                 log.info(
@@ -524,7 +535,7 @@ class MRT2Generator:
                 else:
                     mixed = (1.0 - alpha) * embedding_a + alpha * embedding_b
 
-                self._style_embedding = mixed
+                self._set_style(mixed, is_base=False)
                 self._state = None
                 log.info("[%s] Prompt Mixing 完成 (alpha=%.2f)", self.name, alpha)
                 return mixed

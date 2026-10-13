@@ -44,7 +44,8 @@ async def main(seconds: float, url: str) -> None:
             dur = msg["measure_duration"]
             gap = None if last is None else now - last
             last = now
-            mel, bass = msg["melody"], msg["bass"]
+            mel = msg["melody"]
+            bass = msg.get("bass") or {"audio_base64": "", "events": []}  # bundle 可能不含 bass
             mel_sec = audio_seconds(mel["audio_base64"])
             coverage.append(mel_sec / dur)
             rows.append((msg["measure_index"], now - t0, gap, dur, mel["agent"],

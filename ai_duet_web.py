@@ -905,20 +905,42 @@ html_content = """
             sendSynth();
         }
 
-        function handleCloneFile(input) {
+        // 在瀏覽器解碼音訊檔（mp3/wav/m4a…），轉單聲道 16kHz float32 後再送出；
+        // 後端直接當 PCM 使用。MusicCoCa 本身以 16kHz 分析，最多取前 30 秒。
+        const CLONE_SR = 16000, CLONE_MAX_SEC = 30;
+        async function handleCloneFile(input) {
             const file = input.files[0];
             if (!file) return;
             document.getElementById('clone-label').textContent = file.name;
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const agent = document.getElementById('clone-agent').value;
-                const base64 = e.target.result.split(',')[1];
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ action: 'clone_audio', agent, audio_base64: base64, filename: file.name }));
-                    mrt2Log(`🎤 Audio Cloning → Agent ${agent.toUpperCase()}: ${file.name}`);
+            const agent = document.getElementById('clone-agent').value;
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const decoded = await ctx.decodeAudioData(await file.arrayBuffer());
+                ctx.close();
+                const seconds = Math.min(decoded.duration, CLONE_MAX_SEC);
+                const offline = new OfflineAudioContext(1, Math.ceil(seconds * CLONE_SR), CLONE_SR);
+                const src = offline.createBufferSource();
+                src.buffer = decoded;
+                src.connect(offline.destination);  // 多聲道自動 downmix 成單聲道
+                src.start();
+                const pcm = (await offline.startRendering()).getChannelData(0);
+                const bytes = new Uint8Array(pcm.buffer);
+                let bin = '';
+                for (let i = 0; i < bytes.length; i += 0x8000) {
+                    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
                 }
-            };
-            reader.readAsDataURL(file);
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        action: 'clone_audio', agent, filename: file.name,
+                        audio_base64: btoa(bin), sample_rate: CLONE_SR,
+                    }));
+                    mrt2Log(`🎤 Audio Cloning → Agent ${agent.toUpperCase()}: ${file.name} (${seconds.toFixed(1)}s)`);
+                }
+            } catch (err) {
+                mrt2Log(`❌ 無法解碼音訊檔 ${file.name}: ${err}`);
+            } finally {
+                input.value = '';  // 允許重新選同一個檔案
+            }
         }
 
         function updateMixLabel(val) {
@@ -1506,11 +1528,13 @@ async def websocket_music_loop(websocket: WebSocket):
                     if target and target.has_mrt2 and audio_b64:
                         try:
                             import base64 as b64mod
-                            raw = b64mod.b64decode(audio_b64)
-                            audio_np = np.frombuffer(raw, dtype=np.float32)
-                            if len(audio_np) == 0:
-                                audio_np = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-                            result = target.clone_audio(audio_np, sample_rate=48000)
+                            # 前端已解碼成單聲道 float32 PCM
+                            audio_np = np.frombuffer(b64mod.b64decode(audio_b64), dtype=np.float32)
+                            sr = int(msg.get("sample_rate", 16000))
+                            import functools as ft
+                            result = await asyncio.get_running_loop().run_in_executor(
+                                jax_pool, ft.partial(target.clone_audio, audio_np, sample_rate=sr)
+                            )
                             await safe_send_json({
                                 "type": "mrt2_status", "ok": result is not None,
                                 "message": f"Audio Clone {agent_name.upper()}: {filename}"
@@ -1521,13 +1545,16 @@ async def websocket_music_loop(websocket: WebSocket):
                 elif msg.get("action") == "prompt_mix":
                     alpha = float(msg.get("alpha", 0.5))
                     if mrt2_agent_a and mrt2_agent_b:
-                        emb_a = mrt2_agent_a._style_embedding
-                        emb_b = mrt2_agent_b._style_embedding
+                        # 以兩個 Agent 各自的原始風格為基準混合，兩個 Agent 都改用混合後的風格
+                        emb_a = mrt2_agent_a._base_embedding
+                        emb_b = mrt2_agent_b._base_embedding
                         if emb_a is not None and emb_b is not None:
-                            mixed = mrt2_agent_a.mix_prompts(emb_a, emb_b, alpha=alpha)
+                            mixed_a = mrt2_agent_a.mix_prompts(emb_a, emb_b, alpha=alpha)
+                            mixed_b = mrt2_agent_b.mix_prompts(emb_a, emb_b, alpha=alpha)
                             await safe_send_json({
-                                "type": "mrt2_status", "ok": mixed is not None,
-                                "message": f"Prompt Mix α={alpha:.0%}"
+                                "type": "mrt2_status",
+                                "ok": mixed_a is not None and mixed_b is not None,
+                                "message": f"Prompt Mix α={alpha:.0%} (Agent A + B)"
                             })
         except Exception:
             session_active.clear()
