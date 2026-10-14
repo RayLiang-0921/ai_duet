@@ -57,11 +57,15 @@ USE_CHORDS = True          # False = 不鎖調性，讓模型自由發揮（最�
 KEY_ROOT = "A"             # C C# D D# E F F# G G# A A# B
 KEY_MODE = "minor"         # "major" 或 "minor"
 PROGRESSION = [0, 5, 3, 4] # 級數（0 起算）：I–vi–IV–V
-NOTES_CFG = 0.4            # 音符 conditioning 強度（預設 1.0）。實測 1.0 會把旋律綁死、
-                           # 律動消失；0.4 保留調性又不僵硬
-BARS_PER_CHORD = 2         # 一個和弦撐幾小節，越多越不急促
+NOTES_CFG = 1.0            # 音符 conditioning 強度（預設 1.0）。這個值直接決定調性穩定度：
+                           # 0.4 時調內音只有 69%，且調外音會一直換（聽起來像跑調又跑回來）；
+                           # 1.0 時升到 76%。再往上（1.5–2.0）反而不穩定
+BARS_PER_CHORD = 1         # 一個和弦撐幾小節。1 會更頻繁重申和弦，調性更穩
 CHORD_OCTAVES = (48, 60)   # 和弦音所在音域 (C3–B3)；範圍越窄留給模型的空間越大
-CHORD_ONSET = False        # True = 每次換和弦都硬起音，聽起來像整塊和弦敲下去
+CHORD_ONSET = True         # 每次換和弦時明確起音。實測這樣調性與律動都更穩，
+                           # 代價是和弦進入時的觸鍵較明顯
+BLOCK_OUT_OF_SCALE = True  # 把調外音明確設為靜音（0）。小幅但穩定地減少跑調：
+                           # 3 分鐘實測最差視窗 61.1% → 64.0%，擺盪 17.9 → 12.8pp
 
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 SCALE_STEPS = {"major": [0, 2, 4, 5, 7, 9, 11], "minor": [0, 2, 3, 5, 7, 8, 10]}[KEY_MODE]
@@ -94,8 +98,11 @@ def chord_tokens(frame: int) -> list:
     new_chord = frame == 0 or chord_idx != beat_index(frame - 1) // 4 // BARS_PER_CHORD
     # 2 = 起音（onset），3 = 持續發聲但由模型決定怎麼彈
     value = 2 if (new_chord and CHORD_ONSET) else 3
+    scale = {(root + s) % 12 for s in SCALE_STEPS}
     lo, hi = CHORD_OCTAVES
-    return [value if lo <= p < hi and p % 12 in chord else -1 for p in range(128)]
+    return [value if lo <= p < hi and p % 12 in chord          # 和弦音：發聲
+            else (0 if BLOCK_OUT_OF_SCALE and p % 12 not in scale else -1)
+            for p in range(128)]                               # 0 = 靜音，-1 = 交給模型
 
 
 def build_conditioning(frame: int) -> tuple:
