@@ -1,173 +1,110 @@
-#from magenta_rt import utils
-#from magenta_rt import MagentaRT2Jax
-#mrt = MagentaRT2Jax(size="mrt2_small")
-#embedding = mrt.embed_style("dj scratch, 140bpm, trap with piano sample, G minor")
+"""
+test_mrt2.py — MRT2 即時串流播放：可設定風格、速度、調性、有沒有鼓。
 
-
-'''
-    Args:
-      conditioning: Dictionary mapping TokensConfig.key strings to their values
-        Values can be lists of integers (tokens) or raw embeddings (e.g. Style)
-      cfg_scales: Optional dictionary to override default CFG scales for this call.
-          Example: {'musiccoca': 5.0, 'notes': 3.0}
-      temperature: Sampling temperature. None falls back to
-        ``self.temperature``.
-      top_k: Top-k sampling threshold. None falls back to ``self.top_k``.
-      frames: Number of frames to generate (25 frames = 1 second at 48kHz).
-      state: Streaming state from a previous call. If None, a fresh state is
-          created.
-    
-    Returns:
-      (waveform, state) — a Waveform at 48kHz stereo, and the updated state
-      for continuation.
-'''
-
-#wav, state = mrt.generate(state=None, conditioning={"mulan_tokens_25hz": embedding}, frames=100) 
-#wav.write("output.wav")
-#沒有使用GPU
-#有沒有機會測試base
-
-
+在 WSL GPU 環境執行：雙擊 run_stream_gputest.bat
+"""
 import queue
 import threading
-import time
 
 import numpy as np
-import pasimple  # WSL 內經 WSLg PulseAudio 播放（sounddevice 在 WSL 需要 sudo 安裝 portaudio）
 from magenta_rt import MagentaRT2Jax
 
-CHUNK_FRAMES = 50          # 25 frames = 1 second, so each chunk is 2 s of audio
-BUFFER_CHUNKS = 4          # how many chunks to generate ahead of playback
-PREBUFFER = 2              # 先存滿幾段才開始播放。GPU 偶爾會有一段略超過 2 秒，
-                           # 預存可吸收這種抖動，避免開頭就斷音
-
-# MRT2 沒有 BPM 參數，用兩種方式控制速度：
-#   1. 在風格文字裡寫 BPM（模型的「建議」，不保證準）
-#   2. 用 drum_pianoroll_tokens 在每一拍的位置送出鼓點，把節拍鎖在 BPM 上
+# ===== 設定 =====
+STYLE = "neo soul"
 BPM = 78
-USE_DRUMS = True           # False = 完全不送鼓點條件。注意：不要改成每幀送 [0]，
-                           # 那等於在叫模型「不要有鼓」，CFG 越大壓得越兇
-DRUM_CFG = 2.0             # 鼓點 conditioning 強度（預設 1.0），越大越緊跟節拍
-DRUM_SUBDIV = 2            # 一拍送幾個鼓點。2（八分音符）實測律動最穩，1（每拍）較鬆散
-FRAMES_PER_MIN = 25 * 60   # 1 frame = 40 ms
+KEY = "D minor"             # 例如 "C major"、"F# minor"
+PROGRESSION = [2, 4, 0, 3]  # 和弦級數（0 = I 級），每小節一個和弦
+DRUMS = False               # True = 依 BPM 打鼓；False = 叫 AI 不要生成鼓
+# ================
 
-# MRT2 也沒有調性參數。只寫在文字裡幾乎無效；改用 pianoroll_with_onsets_tokens
-# 送出該調的和弦進行（每小節一個和弦），實測主要音高都會落在調內。
-USE_CHORDS = True          # False = 不鎖調性，讓模型自由發揮（最連貫，但調性不固定）
-KEY_ROOT = "A"             # C C# D D# E F F# G G# A A# B
-KEY_MODE = "minor"         # "major" 或 "minor"
-PROGRESSION = [0, 5, 3, 4] # 級數（0 起算）：I–vi–IV–V
-NOTES_CFG = 1.0            # 音符 conditioning 強度（預設 1.0）。這個值直接決定調性穩定度：
-                           # 0.4 時調內音只有 69%，且調外音會一直換（聽起來像跑調又跑回來）；
-                           # 1.0 時升到 76%。再往上（1.5–2.0）反而不穩定
-BARS_PER_CHORD = 1         # 一個和弦撐幾小節。1 會更頻繁重申和弦，調性更穩
-CHORD_OCTAVES = (48, 60)   # 和弦音所在音域 (C3–B3)；範圍越窄留給模型的空間越大
-CHORD_ONSET = True         # 每次換和弦時明確起音。實測這樣調性與律動都更穩，
-                           # 代價是和弦進入時的觸鍵較明顯
-BLOCK_OUT_OF_SCALE = True  # 把調外音明確設為靜音（0）。小幅但穩定地減少跑調：
-                           # 3 分鐘實測最差視窗 61.1% → 64.0%，擺盪 17.9 → 12.8pp
-
+FRAMES_PER_MIN = 25 * 60    # MRT2 每幀 40 ms
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-SCALE_STEPS = {"major": [0, 2, 4, 5, 7, 9, 11], "minor": [0, 2, 3, 5, 7, 8, 10]}[KEY_MODE]
-
-mrt = MagentaRT2Jax(size="mrt2_small")
-style = mrt.embed_style(f"jazz instrumental, in {KEY_ROOT} {KEY_MODE}")  # or any other style prompt you like
-# 先轉成 token，避免逐幀生成時每一幀都重新 tokenize
-style_tokens = list(mrt.tokenize_style(style))
+SCALES = {"major": [0, 2, 4, 5, 7, 9, 11], "minor": [0, 2, 3, 5, 7, 8, 10]}
 
 
-def beat_index(frame: int) -> int:
-    return (frame * BPM) // FRAMES_PER_MIN
+def count(frame: int, per_minute: float) -> int:
+    """到第 frame 幀為止經過了幾個單位（每分鐘 per_minute 個）。"""
+    return int(frame * per_minute // FRAMES_PER_MIN)
 
 
-def _subdiv_index(frame: int) -> int:
-    return (frame * BPM * DRUM_SUBDIV) // FRAMES_PER_MIN
+def starts(frame: int, per_minute: float) -> bool:
+    """第 frame 幀是否剛好是新的一個單位的開頭。"""
+    return frame == 0 or count(frame, per_minute) != count(frame - 1, per_minute)
 
 
-def is_beat(frame: int) -> bool:
-    """第 frame 幀是否剛好落在新的鼓點上（依 DRUM_SUBDIV 決定密度）。"""
-    return frame == 0 or _subdiv_index(frame) != _subdiv_index(frame - 1)
+def conditioning(frame: int, style_tokens: list) -> tuple:
+    """回傳這一幀的 (conditioning, cfg_scales)。
+
+    MRT2 沒有 BPM / 調性參數，改用它的條件輸入控制（數值皆為實測最佳）：
+    - 調性：每小節送一個和弦（C3–B3），調外音設為靜音
+    - 速度：有鼓時每個八分音符送一次鼓點（實測鎖拍最穩）；沒鼓時只剩換和弦的起音，
+      速度較不穩
+    - 沒鼓：每幀都送「沒有鼓」（寫在風格文字裡幾乎無效）
+    """
+    root_name, mode = KEY.split()
+    root, steps = NOTE_NAMES.index(root_name), SCALES[mode]
+    degree = PROGRESSION[count(frame, BPM / 4) % len(PROGRESSION)]
+    chord = {(root + steps[(degree + k) % 7]) % 12 for k in (0, 2, 4)}
+    scale = {(root + s) % 12 for s in steps}
+
+    # pianoroll 數值：2 = 起音、3 = 發聲（模型決定怎麼彈）、0 = 靜音、-1 = 交給模型
+    on = 2 if starts(frame, BPM / 4) else 3
+    roll = [on if 48 <= p < 60 and p % 12 in chord else (-1 if p % 12 in scale else 0)
+            for p in range(128)]
+    drum = [int(starts(frame, BPM * 2))] if DRUMS else [0]
+
+    cond = {"mulan_tokens_25hz": style_tokens,
+            "pianoroll_with_onsets_tokens": roll,
+            "drum_pianoroll_tokens": drum}
+    return cond, {"notes": 1.0, "drums": 2.0 if DRUMS else 5.0}
 
 
-def chord_tokens(frame: int) -> list:
-    """目前和弦的 pianoroll：和弦音設為發聲，其餘交給模型（-1）。"""
-    chord_idx = beat_index(frame) // 4 // BARS_PER_CHORD
-    degree = PROGRESSION[chord_idx % len(PROGRESSION)]
-    root = NOTE_NAMES.index(KEY_ROOT)
-    chord = {(root + SCALE_STEPS[(degree + k) % 7]) % 12 for k in (0, 2, 4)}
-    new_chord = frame == 0 or chord_idx != beat_index(frame - 1) // 4 // BARS_PER_CHORD
-    # 2 = 起音（onset），3 = 持續發聲但由模型決定怎麼彈
-    value = 2 if (new_chord and CHORD_ONSET) else 3
-    scale = {(root + s) % 12 for s in SCALE_STEPS}
-    lo, hi = CHORD_OCTAVES
-    return [value if lo <= p < hi and p % 12 in chord          # 和弦音：發聲
-            else (0 if BLOCK_OUT_OF_SCALE and p % 12 not in scale else -1)
-            for p in range(128)]                               # 0 = 靜音，-1 = 交給模型
+def main() -> None:
+    import pasimple  # WSL 內經 WSLg PulseAudio 播放
 
+    mrt = MagentaRT2Jax(size="mrt2_small")
+    style_tokens = list(mrt.tokenize_style(mrt.embed_style(f"{STYLE}, in {KEY}")))
 
-def build_conditioning(frame: int) -> tuple:
-    """組出這一幀的 conditioning 與 cfg_scales；沒用到的條件就整個不送。"""
-    cond = {"mulan_tokens_25hz": style_tokens}
-    cfg = {}
-    if USE_DRUMS:
-        cond["drum_pianoroll_tokens"] = [1 if is_beat(frame) else 0]
-        cfg["drums"] = DRUM_CFG
-    if USE_CHORDS:
-        cond["pianoroll_with_onsets_tokens"] = chord_tokens(frame)
-        cfg["notes"] = NOTES_CFG
-    return cond, cfg
+    audio_q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=4)
+    stop = threading.Event()
 
-audio_q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=BUFFER_CHUNKS)
-stop = threading.Event()
-
-
-def generator():
-    state = None
-    frame = 0
-    while not stop.is_set():
-        # conditioning 在一次 generate() 內固定不變，所以逐幀生成才能讓鼓點落在指定的幀上
-        parts = []
-        for _ in range(CHUNK_FRAMES):
-            cond, cfg = build_conditioning(frame)
-            wav, state = mrt.generate(                  # always pass the NEW state back in:
-                conditioning=cond,                      # the old one is freed after each call
-                cfg_scales=cfg,
-                frames=1,
-                state=state,
-            )
-            parts.append(wav.samples)
-            frame += 1
-        samples = np.concatenate(parts).astype(np.float32)
-        while not stop.is_set():                        # wait while the buffer is full
-            try:
-                audio_q.put(samples, timeout=0.5)
-                break
-            except queue.Full:
-                continue
-
-
-def player():
-    # 等預存足夠再開始，開頭才不會因為第一段生成較慢而斷掉
-    while not stop.is_set() and audio_q.qsize() < PREBUFFER:
-        time.sleep(0.05)
-    with pasimple.PaSimple(pasimple.PA_STREAM_PLAYBACK, pasimple.PA_SAMPLE_FLOAT32LE,
-                           2, 48000, app_name="ai_duet") as pa:
+    def generator() -> None:
+        state, frame = None, 0
         while not stop.is_set():
-            try:
-                samples = audio_q.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            pa.write(np.ascontiguousarray(samples).tobytes())  # blocks while playing
+            parts = []
+            for _ in range(50):  # 每段 2 秒；逐幀生成，條件才能精準落在每一幀
+                cond, cfg = conditioning(frame, style_tokens)
+                wav, state = mrt.generate(conditioning=cond, cfg_scales=cfg, frames=1, state=state)
+                parts.append(wav.samples)
+                frame += 1
+            samples = np.ascontiguousarray(np.concatenate(parts), dtype=np.float32)
+            while not stop.is_set():
+                try:
+                    audio_q.put(samples, timeout=0.5)
+                    break
+                except queue.Full:
+                    continue
+
+    def player() -> None:
+        while not stop.is_set() and audio_q.qsize() < 2:  # 先預存 2 段，吸收 GPU 偶發的慢段
+            stop.wait(0.05)
+        with pasimple.PaSimple(pasimple.PA_STREAM_PLAYBACK, pasimple.PA_SAMPLE_FLOAT32LE,
+                               2, 48000, app_name="ai_duet") as pa:
+            while not stop.is_set():
+                try:
+                    pa.write(audio_q.get(timeout=0.5).tobytes())
+                except queue.Empty:
+                    continue
+
+    threads = [threading.Thread(target=generator), threading.Thread(target=player)]
+    for t in threads:
+        t.start()
+    print("Playing - press Enter to stop")
+    input()
+    stop.set()
+    for t in threads:  # 等 GPU 上的 generate() 結束再離開，否則 JAX 會 abort
+        t.join()
 
 
-gen_thread = threading.Thread(target=generator)
-play_thread = threading.Thread(target=player)
-gen_thread.start()
-play_thread.start()
-
-print("Playing - press Enter to stop")
-input()
-stop.set()
-# 等 GPU 上正在跑的 generate() 結束再離開，否則 JAX 會在程式關閉時 abort (core dump)
-gen_thread.join()
-play_thread.join()
+if __name__ == "__main__":
+    main()
