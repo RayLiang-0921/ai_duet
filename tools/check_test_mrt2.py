@@ -46,11 +46,11 @@ def measure(samples: np.ndarray, bpm: int) -> tuple:
 
 mrt = tm.MagentaRT2Jax(size="mrt2_small")
 mrt.generate(conditioning={}, frames=2)  # JIT 暖機
-print(f"風格={tm.STYLE!r} 調性={tm.KEY} 和弦={tm.PROGRESSION}")
+print(f"風格={tm.style_prompt()!r} 調性={tm.KEY} 和弦={tm.PROGRESSION}")
 for drums in (False, True):
     for bpm in (78, 120):
         tm.DRUMS, tm.BPM = drums, bpm
-        tokens = list(mrt.tokenize_style(mrt.embed_style(f"{tm.STYLE}, in {tm.KEY}")))
+        tokens = list(mrt.tokenize_style(mrt.embed_style(tm.style_prompt())))
         state, parts = None, []
         for f in range(SECONDS * 25):
             cond, cfg = tm.conditioning(f, tokens)

@@ -10,11 +10,12 @@ import numpy as np
 from magenta_rt import MagentaRT2Jax
 
 # ===== 設定 =====
+INSTRUMENT = "solo electric guitar"  # 這個 agent 負責的樂器；其他樂器之後交給其他 agent
 STYLE = "neo soul"
 BPM = 78
 KEY = "D minor"             # 例如 "C major"、"F# minor"
 PROGRESSION = [2, 4, 0, 3]  # 和弦級數（0 = I 級），每小節一個和弦
-DRUMS = False               # True = 依 BPM 打鼓；False = 叫 AI 不要生成鼓
+DRUMS = False               # True = 依 BPM 打鼓；False = 叫 AI 不要生成鼓（吉他 agent 保持 False）
 # ================
 
 FRAMES_PER_MIN = 25 * 60    # MRT2 每幀 40 ms
@@ -30,6 +31,12 @@ def count(frame: int, per_minute: float) -> int:
 def starts(frame: int, per_minute: float) -> bool:
     """第 frame 幀是否剛好是新的一個單位的開頭。"""
     return frame == 0 or count(frame, per_minute) != count(frame - 1, per_minute)
+
+
+def style_prompt() -> str:
+    # 樂器寫在最前面：實測 "neo soul" 單獨使用時會生成合成器 + 貝斯 + 鼓，
+    # 加上 "solo electric guitar" 後四個 10 秒片段都被辨識為吉他，低頻（<80 Hz）從 59% 降到 0.1%
+    return f"{INSTRUMENT}, {STYLE}, in {KEY}"
 
 
 def conditioning(frame: int, style_tokens: list) -> tuple:
@@ -63,7 +70,7 @@ def main() -> None:
     import pasimple  # WSL 內經 WSLg PulseAudio 播放
 
     mrt = MagentaRT2Jax(size="mrt2_small")
-    style_tokens = list(mrt.tokenize_style(mrt.embed_style(f"{STYLE}, in {KEY}")))
+    style_tokens = list(mrt.tokenize_style(mrt.embed_style(style_prompt())))
 
     audio_q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=4)
     stop = threading.Event()
