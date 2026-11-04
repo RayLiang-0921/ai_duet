@@ -24,7 +24,9 @@ MIDI_PORT = None            # MIDI 鍵盤名稱；None = 第一個找到的
 
 AGENTS = {"piano": "solo piano", "guitar": "solo electric guitar",
           "bass": "solo electric bass", "drums": "solo drum kit"}
-GAINS = {"piano": 0.8, "guitar": 0.8, "bass": 0.9, "drums": 1.0}
+GAINS = {"piano": 0.8, "guitar": 0.8, "bass": 1.0, "drums": 1.12}  # 貝斯、鼓各比原本大 1 dB
+MASTER = 0.85               # 整體音量；配合下面的限制器，混音的失真約 −49 dB
+TEMPERATURE = 1.1           # 取樣隨機度（MRT2 預設 1.3）：吉他、鼓更穩，貝斯不變
 FRAMES_PER_CALL = 5         # 一次在 GPU 上算幾幀：4 個 agent 時 5 幀約 38 ms/幀（預算 40 ms）
 QUEUE_FRAMES = 8            # 預先生成的幀數，太少會斷音、太多會增加延遲
 CHORD_SETTLE = 0.08         # 第一個音按下後等多久再判斷和弦（和弦的音不會剛好同時按下）
@@ -46,6 +48,13 @@ def detect_chord(notes) -> "tuple | None":
             if best_score is None or score > best_score:
                 best, best_score = (root, quality), score
     return best
+
+
+def limit(x: np.ndarray, threshold: float = 0.8) -> np.ndarray:
+    """軟拐點限制器：threshold 以下完全不動，超過才柔和壓縮，避免爆音。"""
+    a = np.abs(x)
+    return np.where(a <= threshold, x,
+                    np.sign(x) * (threshold + (1 - threshold) * np.tanh((a - threshold) / (1 - threshold))))
 
 
 def agent_conditioning(agent: str, frame: int, root: int, mode: str, tokens: dict, human: tuple) -> tuple:
@@ -158,7 +167,7 @@ def main() -> None:
     import pasimple  # 經 WSLg 播放到 Windows 喇叭
 
     names = list(AGENTS)
-    mrt = tm.MagentaRT2Jax(size="mrt2_small")
+    mrt = tm.MagentaRT2Jax(size="mrt2_small", temperature=TEMPERATURE)
     band = BatchedMRT2(mrt, len(names))
     live = {"tokens": {a: encode(mrt, f"{inst}, {STYLE}") for a, inst in AGENTS.items()}}
 
@@ -199,8 +208,8 @@ def main() -> None:
             audio, state = band.generate(rows, state)
             frame += FRAMES_PER_CALL
             for k in range(FRAMES_PER_CALL):
-                mix = sum(GAINS[a] * audio[k, i] for i, a in enumerate(names))
-                mix = np.ascontiguousarray(np.tanh(mix), dtype=np.float32)  # tanh：柔和地限制音量，避免爆音
+                mix = MASTER * sum(GAINS[a] * audio[k, i] for i, a in enumerate(names))
+                mix = np.ascontiguousarray(limit(mix), dtype=np.float32)
                 while not stop.is_set():
                     try:
                         audio_q.put(mix, timeout=0.5)
