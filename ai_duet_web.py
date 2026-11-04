@@ -1682,8 +1682,8 @@ async def websocket_music_loop(websocket: WebSocket):
                 "measure_index": round_count,
                 "measure_duration": measure_sec,
                 "scale": current_scale,
-                "drum": {"events": events_drum},
-                "bass": bass_data,
+                #"drum": {"events": events_drum},
+                #"bass": bass_data,
                 "melody": melody_data,
             }
 

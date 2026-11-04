@@ -188,7 +188,7 @@ class MRT2Generator:
         self,
         name: str,
         scale: List[int],
-        style_prompt: str = "piano melody",
+        style_prompt: str = "jazz guitar melody",
         mrt2_system: Optional[Any] = None,
     ) -> None:
         self.name = name
@@ -803,7 +803,7 @@ _mrt2_system = _try_load_mrt2(size="mrt2_small")
 agent_a = MRT2Generator(
     name="MRT2_Primo",
     scale=C_MAJOR_PITCHES,
-    style_prompt="jazz piano melody improvisation",
+    style_prompt="jazz electric guitar melody improvisation",
     mrt2_system=_mrt2_system,
 )
 agent_b = MRT2Generator(
