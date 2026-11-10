@@ -23,7 +23,8 @@ MIDI_PORT = None            # MIDI 鍵盤名稱；None = 第一個找到的
 # ================
 
 AGENTS = {"piano": "solo piano", "guitar": "solo electric guitar",
-          "bass": "solo electric bass", "drums": "solo drum kit"}
+          "bass": "solo electric bass",
+          "drums": "drum kit with crisp hi-hats and crash cymbals"}  # 只寫 drum kit 幾乎沒有銅鈸聲
 GAINS = {"piano": 0.8, "guitar": 0.8, "bass": 1.0, "drums": 1.12}  # 貝斯、鼓各比原本大 1 dB
 PAN = {"piano": -0.4, "guitar": 0.4, "bass": 0.0, "drums": 0.0}  # −1 = 最左、+1 = 最右；低音和鼓放中間
 MASTER = 0.85               # 整體音量；配合下面的限制器，混音的失真約 −49 dB
