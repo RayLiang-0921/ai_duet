@@ -12,6 +12,7 @@ import threading
 import time
 
 import numpy as np
+from scipy.signal import lfilter
 
 import test_mrt2 as tm  # 共用時間計算、MIDI 接收等工具
 
@@ -24,9 +25,10 @@ MIDI_PORT = None            # MIDI 鍵盤名稱；None = 第一個找到的
 
 AGENTS = {"piano": "solo piano", "guitar": "solo electric guitar",
           "bass": "solo electric bass",
-          "drums": "drum kit with crisp hi-hats and crash cymbals"}  # 只寫 drum kit 幾乎沒有銅鈸聲
+          "drums": "dry drum kit, tight hi-hats, snappy snare"}  # 要求銅鈸明顯會讓銅鈸拖長，所以生成乾的鼓、混音再提亮
 GAINS = {"piano": 0.8, "guitar": 0.8, "bass": 1.0, "drums": 1.12}  # 貝斯、鼓各比原本大 1 dB
 PAN = {"piano": -0.4, "guitar": 0.4, "bass": 0.0, "drums": 0.0}  # −1 = 最左、+1 = 最右；低音和鼓放中間
+DRUM_BRIGHTEN = 6.0         # 鼓 5 kHz 以上提亮幾 dB，讓 hi-hat 聽得清楚
 MASTER = 0.85               # 整體音量；配合下面的限制器，混音的失真約 −49 dB
 TEMPERATURE = 1.1           # 取樣隨機度（MRT2 預設 1.3）：吉他、鼓更穩，貝斯不變
 FRAMES_PER_CALL = 5         # 一次在 GPU 上算幾幀：4 個 agent 時 5 幀約 38 ms/幀（預算 40 ms）
@@ -56,6 +58,17 @@ def pan_gains(position: float) -> np.ndarray:
     """等功率平移：回傳 [左, 右] 增益，放在中間時兩邊都是 1，移到一邊時總音量不變。"""
     angle = (position + 1) * np.pi / 4
     return np.array([np.cos(angle), np.sin(angle)], dtype=np.float32) * np.sqrt(2)
+
+
+def high_shelf(gain_db: float, f0: float = 5000, q: float = 0.7, sr: int = 48000) -> tuple:
+    """高頻棚架 EQ（RBJ biquad）：f0 以上提高 gain_db，回傳 (b, a) 給 scipy.signal.lfilter。"""
+    A, w = 10 ** (gain_db / 40), 2 * np.pi * f0 / sr
+    al, c = np.sin(w) / (2 * q), np.cos(w)
+    b = [A * ((A + 1) + (A - 1) * c + 2 * np.sqrt(A) * al), -2 * A * ((A - 1) + (A + 1) * c),
+         A * ((A + 1) + (A - 1) * c - 2 * np.sqrt(A) * al)]
+    a = [(A + 1) - (A - 1) * c + 2 * np.sqrt(A) * al, 2 * ((A - 1) - (A + 1) * c),
+         (A + 1) - (A - 1) * c - 2 * np.sqrt(A) * al]
+    return np.array(b) / a[0], np.array(a) / a[0]
 
 
 def limit(x: np.ndarray, threshold: float = 0.8) -> np.ndarray:
@@ -209,6 +222,7 @@ def main() -> None:
         threading.Thread(target=add_key_to_prompts, daemon=True).start()
 
         state, frame = band.new_state(int(time.time()) % 10000 * 10), 0
+        eq, eq_state = high_shelf(DRUM_BRIGHTEN), np.zeros((2, 2))
         while not stop.is_set():
             sounding, onsets = human.take()
             rows = [band.frame_row([agent_conditioning(a, frame + k, root, mode, live["tokens"],
@@ -216,6 +230,9 @@ def main() -> None:
                     for k in range(FRAMES_PER_CALL)]
             audio, state = band.generate(rows, state)
             frame += FRAMES_PER_CALL
+            d = names.index("drums")  # 鼓提亮高頻；濾波器狀態 eq_state 接續上一批，幀與幀之間不會有接縫
+            drums, eq_state = lfilter(*eq, audio[:, d].reshape(-1, 2), axis=0, zi=eq_state)
+            audio[:, d] = drums.reshape(audio[:, d].shape)
             for k in range(FRAMES_PER_CALL):
                 mix = MASTER * sum(mix_gains[a] * audio[k, i] for i, a in enumerate(names))
                 mix = np.ascontiguousarray(limit(mix), dtype=np.float32)
