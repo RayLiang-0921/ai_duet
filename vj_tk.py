@@ -53,7 +53,7 @@ float obj(sampler2D s,vec2 p,float t,float fade){
 float beam(vec2 uv,float cx,float lv,float t){
  float n=fbm(vec2(uv.x*7.+cx*9.,uv.y*2.5-t*.6));
  float x=(uv.x-cx+(n-.5)*.05)/(.022+.03*lv);
- float h=.05+lv*.4;
+ float h=.08+lv*.85;
  return exp(-x*x)*smoothstep(h,0.,uv.y)*(.45+1.3*lv)*(.55+.8*n);
 }
 /* 五道光束：鼓、貝斯、觀眾（中間）、鍵盤、旋律 */

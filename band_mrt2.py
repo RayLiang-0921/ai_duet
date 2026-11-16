@@ -1,12 +1,14 @@
 """
 band_mrt2.py — 五個 MRT2 agent（Rhodes、吉他、貝斯、鼓、弦樂）組成的即時樂團，可在 neo soul 與 memphis rap 之間切換。
-彈一個和弦開始：和弦決定調（根音 + 大/小調），那一刻就是第一拍；之後按住音時樂團跟著你。
-按 SWITCH_KEY（鍵盤最左邊的鍵）切換風格，在下一小節生效；開始前按則是選擇起始風格。
+彈一個和弦開始：和弦決定調（根音 + 大/小調），那一刻就是第一拍。之後和弦進行會自己走；
+按住音時樂團跟著你，彈一個和弦則讓和弦進行從那個和弦接下去。
+按 SWITCH_KEY（鍵盤最左邊的鍵）切換風格，在下一段（4 小節）開頭生效；開始前按則是選擇起始風格。
 執行：雙擊 run_band.bat（WSL GPU 環境）
 """
 import math
 import os
 import queue
+import random
 import socket
 import subprocess
 import sys
@@ -25,17 +27,22 @@ MIDI_PORT = None            # MIDI 鍵盤名稱；None = 第一個找到的
 # ================
 
 AGENTS = ["rhodes", "guitar", "bass", "drums", "strings"]
-STYLES = {  # 每種風格：和弦級數（每小節一個，0 = 你彈的第一個和弦）、鼓點（每拍幾個、強度）、各 agent 的提示詞
-    "neo soul": {"progression": [0, 3, 4, 0], "drum_div": 2, "drum_cfg": 2.0,
+STYLES = {  # 每種風格：鼓點（每拍幾個、強度）、各 agent 的提示詞
+    "neo soul": {"drum_div": 2, "drum_cfg": 2.0,
                  "prompts": {"rhodes": "solo rhodes electric piano", "guitar": "solo electric guitar",
                              "bass": "solo electric bass",
                              "drums": "dry drum kit, tight hi-hats, snappy snare",  # 要求銅鈸明顯會讓銅鈸拖長
                              "strings": "cinematic strings"}},
-    "memphis rap": {"progression": [0, 5, 3, 4], "drum_div": 4, "drum_cfg": 4.0,  # 16 分音符 hi-hat；強度 2 時鼓常跑掉
+    "memphis rap": {"drum_div": 4, "drum_cfg": 4.0,  # 16 分音符 hi-hat；強度 2 時鼓常跑掉
                     "prompts": {"rhodes": "solo rhodes electric piano", "guitar": "solo electric guitar",
                                 "bass": "deep sub bass",  # "808 bass" 的長滑音跟不上拍子
                                 "drums": "memphis rap drums with cowbell and hi-hats",
                                 "strings": "cinematic strings"}},
+}
+PHRASE_BARS = 4             # 風格在每段（4 小節）的開頭切換，不在半途切
+NEXT_CHORD = {  # 和弦進行自己走：每小節從上一個和弦的常見去處隨機挑一個（級數，0 = 主和弦）
+    "minor": {0: [3, 5, 6, 2], 2: [5, 3, 0], 3: [4, 6, 0, 5], 4: [0, 5, 3], 5: [3, 6, 2, 0], 6: [0, 2, 5]},
+    "major": {0: [5, 3, 1, 4], 1: [4, 6, 3], 3: [4, 0, 1, 5], 4: [0, 5, 3], 5: [3, 1, 4, 0], 6: [0, 4]},
 }
 GAINS = {"rhodes": 0.8, "guitar": 0.8, "bass": 1.0, "drums": 1.12, "strings": 0.8}
 PAN = {"rhodes": -0.4, "guitar": 0.4, "bass": 0.0, "drums": 0.0, "strings": 0.0}  # −1 = 最左、+1 = 最右
@@ -143,8 +150,8 @@ class VisualLink:
 
 
 def agent_conditioning(agent: str, frame: int, root: int, mode: str, style: dict, tokens: dict,
-                       human: tuple) -> tuple:
-    """回傳某個 agent 這一幀的 (conditioning, cfg_scales)。human = (正在按的音, 剛按下的音)。
+                       human: tuple, degree: int = 0) -> tuple:
+    """回傳某個 agent 這一幀的 (conditioning, cfg_scales)。human = (正在按的音, 剛按下的音)；degree = 這小節的和弦級數。
 
     - Rhodes：和弦（C3–B4），每拍起音；吉他：和弦（C3–B3），每個八分音符起音
     - 弦樂：和弦（G3–F#5），每小節起音一次後一直持續（鋪底）
@@ -154,8 +161,6 @@ def agent_conditioning(agent: str, frame: int, root: int, mode: str, style: dict
     """
     steps = tm.SCALES[mode]
     scale = {(root + s) % 12 for s in steps}
-    progression = style["progression"]
-    degree = progression[tm.count(frame, BPM / 4) % len(progression)]
     chord = [(root + steps[(degree + k) % 7]) % 12 for k in (0, 2, 4)]
     sounding, onsets = human
     other = lambda p: -1 if p % 12 in scale else 0  # 調內音交給模型，調外音靜音
@@ -334,19 +339,30 @@ def main() -> None:
         link.send(f"k|{key_name}|{style}")
         state, frame, pending = band.new_state(int(time.time()) % 10000 * 10), 0, None
         eq, eq_state = high_shelf(DRUM_BRIGHTEN), np.zeros((2, 2))
+        rng, degree, human_degree = random.Random(), 0, None
+        steps = tm.SCALES[mode]
         while not stop.is_set():
             if human.switch.is_set():
                 human.switch.clear()
                 pending = styles[(styles.index(pending or style) + 1) % len(styles)]
-                print(f"🔀 下一小節切換到 {pending}", flush=True)
+                print(f"🔀 下一段開頭切換到 {pending}", flush=True)
             sounding, onsets = human.take()
+            played = detect_chord(sounding) if len(sounding) >= 2 else None  # 彈和弦 → 和弦進行從那個和弦接下去
+            if played and (played[0] - root) % 12 in steps:
+                human_degree = steps.index((played[0] - root) % 12)
             rows, frame_styles = [], []
             for k in range(FRAMES_PER_CALL):
-                if pending and tm.starts(frame + k, BPM / 4):  # 在小節開頭換風格，拍子不中斷
-                    style, pending = pending, None
+                if tm.starts(frame + k, BPM / 4):  # 小節開頭：決定這小節的和弦；段落開頭才換風格，拍子不中斷
+                    bar = tm.count(frame + k, BPM / 4)
+                    if pending and bar % PHRASE_BARS == 0:
+                        style, pending, degree = pending, None, 0
+                    elif human_degree is not None:
+                        degree, human_degree = human_degree, None
+                    elif bar > 0:
+                        degree = rng.choice(NEXT_CHORD[mode].get(degree, [0]))
                 frame_styles.append(styles.index(style))
                 rows.append(band.frame_row([agent_conditioning(a, frame + k, root, mode, STYLES[style], tokens[style],
-                                                               (sounding, onsets if k == 0 else set()))
+                                                               (sounding, onsets if k == 0 else set()), degree)
                                             for a in AGENTS]))
             t0 = time.perf_counter()
             audio, state = band.generate(rows, state)
