@@ -1,30 +1,55 @@
-# AI Duet — 即時 AI 樂團（Magenta RealTime 2 + GrooVAE）
+# AI Duet — 跟觀眾一起即興的 AI 樂團
 
-五個 AI agent（Rhodes、吉他、貝斯、弦樂、digital bell）用 **Magenta RealTime 2 (MRT2)** 即時生成音訊，
-鼓手由鼓機排 pattern、**GrooVAE**（Magenta 的真人鼓手模型）補 hi-hat 和人味、one-shot 取樣發聲，一起 jam；
-觀眾用 MIDI 鍵盤彈和弦決定調性並啟動音樂（彈的音立刻有鋼琴聲），按住音時樂團跟著走，在視覺視窗按空白鍵在下一段切換風格（neo soul ↔ memphis rap，memphis 一律小調、較暗、808 貝斯；切換前一小節提示詞逐拍混合過去）；每段樂器會隨機退出或加入（觀眾彈琴時全員回來），鼓每段結尾有過門。
-畫面由 tkinter + OpenGL 的視覺程式即時反應各樂器的音量、拍子和觀眾彈的音。
+觀眾在 MIDI 鍵盤上彈一個和弦，AI 樂團就以那個調開始演奏；按住音時樂團跟著你彈，按空白鍵換風格。
+畫面由視覺程式即時反應各樂器的音量、拍子和觀眾彈的音。
+
+- **五個 MRT2 agent**（Rhodes、吉他、貝斯、弦樂、digital bell）：用 Google 的 **Magenta RealTime 2** 在 RTX 3050 上即時生成音訊。
+- **一個鼓手**：鼓機照規則排 pattern → **GrooVAE**（Magenta 的真人鼓手模型）補 hi-hat、力度、微小的提前延後 → FL Studio 的 one-shot 取樣發聲；memphis 另有跟著大鼓的 808 貝斯。
+- **兩種風格**：neo soul、memphis rap（一律小調、較暗）。切換前一小節提示詞逐拍混合過去；每段（4 小節）樂器會隨機退出或加入，鼓每段結尾有過門。
+
+## 架構
+
+```
+Windows                                   WSL2 (Ubuntu)
+┌──────────────────────┐   MIDI 音符 TCP   ┌───────────────────────────────────────┐
+│ MIDI 鍵盤 ──► 橋接    │ ───────────────► │ band_mrt2.py（樂團）                     │
+│   （同時發鋼琴聲）     │                  │   band/ 套件：和聲 → MRT2 批次生成（GPU）  │
+│                      │   音量/拍子 TCP   │             鼓手 ──► groove_server.py    │
+│ vj_tk.py（視覺，內顯） │ ◄─────────────── │                       （GrooVAE，CPU）   │
+│   空白鍵 ──► 切換風格  │ ───────────────► │   混音 ──► PulseAudio ──► Windows 喇叭    │
+└──────────────────────┘                  └───────────────────────────────────────┘
+```
 
 ## 檔案
 
 | 檔案 | 用途 |
 |------|------|
-| `band_mrt2.py` | 樂團主程式（WSL GPU 端）：五個 agent 批次生成、鼓機與鼓的取樣發聲、和弦進行、風格切換、混音、送資料給視覺；`--midi-bridge` 是 Windows 端的鍵盤橋接（同時發鋼琴聲） |
-| `groove_server.py` | 鼓手的人味（WSL CPU 端）：由樂團自動啟動，收鼓機的 2 小節 pattern，用 GrooVAE 回傳真人般的演奏（hi-hat、力度、微小的提前延後） |
-| `samples/<風格>/` | 每種風格的鼓 one-shot（kick、snare、hihat、openhat、rim）：neo soul 用 FL 的「@PRODBY.XERO 90's R&B」kit，memphis rap 用「Trap Essentials」；資料夾裡有 `808.wav` 的風格，貝斯改由 808 取樣跟著大鼓打（自動調到和弦根音），取代 MRT2 的貝斯 |
-| `vj_tk.py` | 視覺（Windows 端）：由樂團自動啟動，用內顯畫，`--demo` 可不接模型單獨測試 |
-| `test_mrt2.py` | 共用工具（時間計算、MIDI 接收）；也可單獨跑一個 agent 的串流 |
-| `run_band.bat` / `run_band.sh` | 啟動：設定 Windows python 用內顯，再在 WSL 裡啟動樂團 |
+| `run_band.bat` / `run_band.sh` | **啟動**：設定 Windows python 用內顯，再在 WSL 裡啟動樂團 |
+| `band_mrt2.py` | 入口：WSL 端啟動樂團；Windows 端 `--midi-bridge` 讀鍵盤（由樂團自動啟動） |
+| `band/settings.py` | **所有可調設定**：BPM、風格與提示詞、音量、曲式機率、鼓取樣對應 |
+| `band/band.py` | 主流程：等和弦 → 每批 5 幀決定和弦進行、風格、編制、鼓 → 生成、混音、播放 |
+| `band/harmony.py` | 判斷觀眾的和弦；每個 agent 每一幀要彈什麼（MRT2 的 conditioning） |
+| `band/mrt2.py` | 把五個 agent 合成一批在 GPU 上生成；風格提示詞編碼與混合 |
+| `band/drummer.py` | 鼓機規則、送 GrooVAE、取樣發聲、808 |
+| `band/mixer.py` | 平移、限制器、算給視覺的音量 |
+| `band/links.py` | 視覺連線（含空白鍵）、觀眾音符、Windows 端 MIDI 橋接與鋼琴聲 |
+| `groove_server.py` | 鼓手的人味：收鼓機的 2 小節 pattern，用 GrooVAE 回傳演奏（獨立程序、自己的環境） |
+| `vj_tk.py` | 視覺（Windows 端，tkinter + OpenGL）；`--demo` 可不接樂團單獨測試 |
+| `samples/<風格>/` | 鼓的 one-shot：kick、snare、hihat、openhat、rim（+ memphis 的 808.wav）。換檔案就換音色 |
+| `test_mrt2.py` | 共用工具（時間計算、MIDI 接收、模型載入）；也可單獨跑一個 agent 的串流 |
+| `tools/analyze_rec.py` | 分析錄音：調性、跟拍、有沒有偷打鼓 |
 
-## 環境
+## 環境安裝
 
 三個 Python 環境：
 
-- **WSL2（Ubuntu）`~/ai_duet_gpu_venv`**：JAX CUDA 版只有 Linux 有，所以模型在 WSL 跑，GPU 直接用 Windows 的 NVIDIA 驅動（不需 CUDA toolkit、不需 sudo）。
-- **WSL2 `~/groove_venv`**：GrooVAE 需要舊版 TensorFlow，和 MRT2 的套件衝突，所以另開一個環境、只用 CPU。
-- **Windows `venv`**：WSL 讀不到 USB MIDI、也不開視窗，所以 MIDI 橋接和視覺在 Windows 端跑，由 `band_mrt2.py` 自動啟動。
+| 環境 | 放什麼 | 為什麼分開 |
+|------|--------|-----------|
+| WSL2 `~/ai_duet_gpu_venv` | MRT2（JAX CUDA）、樂團 | JAX 的 CUDA 版只有 Linux 有；GPU 直接用 Windows 的驅動，不需 CUDA toolkit |
+| WSL2 `~/groove_venv` | GrooVAE（舊版 TensorFlow） | 和 MRT2 的套件衝突；只用 CPU |
+| Windows `venv` | MIDI 橋接、視覺 | WSL 讀不到 USB MIDI、也不開視窗 |
 
-### WSL2 一次性安裝
+### WSL2：樂團
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -44,48 +69,57 @@ apt-get download libpulse0 libsndfile1 libx11-xcb1 libasyncns0 libflac8 libogg0 
 for f in *.deb; do dpkg -x "$f" ~/pulse_libs/root; done
 ```
 
-`run_band.sh` 會設定：`MAGENTA_HOME`（共用 Windows 已下載的 checkpoint）、
-`XLA_PYTHON_CLIENT_PREALLOCATE=false` 與 `XLA_PYTHON_CLIENT_ALLOCATOR=platform`（4 GB 顯卡不預先佔顯存）、`LD_LIBRARY_PATH`（libpulse）。
-
-### WSL2 GrooVAE 環境（鼓手）
+### WSL2：鼓手（GrooVAE）
 
 ```bash
 uv venv ~/groove_venv --python 3.10
 source ~/groove_venv/bin/activate
-uv pip install tensorflow==2.9.1 tensorflow-probability==0.17.0 tensorflow-datasets==4.6.0 tensorflow-metadata==1.9.0     protobuf==3.20.3 note-seq==0.0.3 "numpy<1.24" tf-slim
+uv pip install tensorflow==2.9.1 tensorflow-probability==0.17.0 tensorflow-datasets==4.6.0 tensorflow-metadata==1.9.0 \
+    protobuf==3.20.3 note-seq==0.0.3 "numpy<1.24" tf-slim
 uv pip install --no-deps magenta==2.1.4   # 直接裝會因 llvmlite 建置失敗
 mkdir -p ~/groovae && cd ~/groovae
 curl -O https://storage.googleapis.com/magentadata/models/music_vae/checkpoints/groovae_2bar_add_closed_hh.tar
 mkdir groovae_2bar_add_closed_hh && tar xf groovae_2bar_add_closed_hh.tar -C groovae_2bar_add_closed_hh
 ```
 
-### Windows venv
+### Windows
 
 ```powershell
 python -m venv venv
 .\venv\Scripts\pip install mido python-rtmidi numpy PyOpenGL pyopengltk pillow
 ```
 
+`run_band.sh` 會設定 `MAGENTA_HOME`（MRT2 模型檔，第一次執行自動下載到 `%USERPROFILE%\Documents\Magenta`）、
+`XLA_PYTHON_CLIENT_PREALLOCATE=false` 與 `XLA_PYTHON_CLIENT_ALLOCATOR=platform`（4 GB 顯卡不預先佔顯存）、`LD_LIBRARY_PATH`（libpulse）。
+
 ## 執行與演奏
 
-1. 接上 MIDI 鍵盤，雙擊 `run_band.bat`（第一次啟動要編譯模型約 4 分鐘，之後有快取約 1 分半；視覺視窗會先出現等待畫面）。
-2. **彈一個和弦**：根音和大小調決定調性，那一刻就是第一拍，音樂與光束開始。彈的音由 Windows 內建合成器立刻發出鋼琴聲（`PIANO_PORT`），樂團的回應約 0.6 秒後跟上。
+1. 接上 MIDI 鍵盤，雙擊 `run_band.bat`。第一次啟動要編譯模型約 4 分鐘，之後有快取約 1 分半；視覺視窗會先出現等待畫面。
+2. **彈一個和弦**：根音和大小調決定調性，那一刻就是第一拍，音樂與光束開始。彈的音由 Windows 內建合成器立刻發出鋼琴聲，樂團的回應約 0.6 秒後跟上。
 3. 之後和弦進行會自己走（每小節從上一個和弦的常見去處挑一個）；**彈一個和弦**可以把進行導向那個和弦；**按住音**時所有樂器在自己的音域彈你按的音級、808 跟你最低的音，退出的樂器也會回來。
 4. 在視覺視窗**按空白鍵**切換風格，在下一段（4 小節）開頭生效（畫面會先寫「下一段開始」，切換時寫「風格切換」）；開始前按則是選擇起始風格。
-5. 視覺視窗：`Esc` 離開全螢幕、`F` 全螢幕、`Q` 結束；移動滑鼠會提示切換風格的鍵。
+5. 視覺視窗：`Esc` 離開全螢幕、`F` 全螢幕、`Q` 結束；移動滑鼠會提示切換風格的鍵。終端機按 Enter 結束，會印出每幀生成時間和斷音次數。
 
-結束時終端機會印出每幀生成時間（中位數 / 95% / 最慢）和斷音次數；RTX 3050 Laptop 上五個 MRT2 agent 約 37 ms/幀（預算 40 ms）、0 次斷音、延遲約 0.6 秒；鼓的取樣發聲每幀只要 0.1 ms。
+RTX 3050 Laptop 上五個 agent 約 37 ms/幀（預算 40 ms）、0 次斷音、延遲約 0.6 秒；鼓的取樣發聲每幀只要 0.1 ms。
 
-主要設定都在 `band_mrt2.py` 開頭：`BPM`、`PIANO_PORT`、`STYLES`（各 agent 提示詞、風格描述 `prompt`、強制調式 `mode`、hi-hat 密度）、`DROP_P` / `REJOIN_P`（每段樂器退出與回來的機率）、`BLENDS`（切換前的混合比例）、`GAINS` / `PAN`、`NEXT_CHORD`（和弦進行）、`SAMPLES`（鼓音高對應的取樣）、`DRUM_LAG`（MRT2 的樂器比鼓點條件晚約 70 ms 出聲，鼓延後 2 幀對齊）。
-鼓的規則（小鼓在 2、4 拍；大鼓比小鼓多一點、通常不跟小鼓同時；open hat 每 4 小節一次或偶爾跟大鼓一起；每段最後一拍多半有過門，每 8 小節偶爾整小節只剩小鼓滾奏）在 `Drummer.pattern`，
-每 2 小節提前送給 `groove_server.py` 加人味；GrooVAE 沒回應時就直接打鼓機的 pattern。
+## 怎麼改
+
+- **設定**都在 `band/settings.py`，每一項都有註解：BPM、`STYLES`（提示詞、風格描述、強制調式、hi-hat 密度）、`GAINS` / `PAN`、`DROP_P` / `REJOIN_P`、`NEXT_CHORD`、`SAMPLES`、`DRUM_LAG`。
+- **鼓的音色**：換 `samples/<風格>/` 裡同名的 wav。放一個 `808.wav` 就會有 808 貝斯（自動量基頻、調到和弦根音）。
+- **鼓的規則**：`band/drummer.py` 的 `Drummer.pattern`（大鼓 / 小鼓 / open hat / 過門）。
+- **各樂器怎麼跟和弦**：`band/harmony.py` 的 `agent_conditioning`（音域、起音頻率、人類按鍵時的行為）。
+- **加一個樂器**：`AGENTS` 加名字，`STYLES` 兩種風格各加提示詞，`GAINS` / `PAN` 給值，`agent_conditioning` 給音域；每多一個 agent 每幀約多 1 ms。
+
+## 測試
+
+- 不接視覺、把分軌錄下來：`python band_mrt2.py --no-visual --record /tmp/rec.wav`（12 聲道，順序同 `AGENTS` 再加鼓；要寫在 WSL 本機硬碟，寫到 `/mnt/c` 會斷音）。沒有鍵盤時可以用 TCP 送 `"1 60\n"` 之類的行到 127.0.0.1:47600 模擬按鍵，送 `"s\n"` 到 47601 模擬空白鍵。
+- 分析錄音：`python tools/analyze_rec.py /tmp/rec.wav C major 25.6`（調名、調式、切到 memphis 的秒數）。目前的數字：貝斯 95–97% 在調內、各樂器相對鼓 ±40 ms 內、沒有 MRT2 樂器鎖在拍點上打鼓。
+- 單獨測一個 agent：在 WSL 裡用 `run_band.sh` 相同的環境變數執行 `python test_mrt2.py`；視覺單獨測：`venv\Scripts\python vj_tk.py --demo`。
 
 ## 注意事項
 
 - **視覺必須用內顯**：和 RTX 3050 搶 GPU 會造成大量斷音。`run_band.bat` 會把 `venv` 的 python 設成「省電」GPU；若終端機出現「正在用 RTX 3050 畫圖」的警告，到 Windows 圖形設定手動改。
-- **電源**：GPU 全速時筆電若供電不足會直接斷電。請用原廠 180 W 變壓器、電池先充飽；`run_band.bat` 不會改電源計畫，建議「高效能」計畫把 AC 下處理器最大狀態設為 99%（關 Turbo）。
+- **電源**：GPU 全速時筆電若供電不足會直接斷電。請用原廠 180 W 變壓器、電池先充飽；建議「高效能」計畫把 AC 下處理器最大狀態設為 99%（關 Turbo）。
 - **斷電後 WSL 會卡住**（GPU 時脈卡在 210 MHz、Windows 連不到 WSL 的 port）：執行 `wsl --shutdown` 再重開。
-- 模型檔放在 `%USERPROFILE%\Documents\Magenta\magenta-rt-v2`（`MAGENTA_HOME`），第一次執行會自動下載。
 - JAX 的編譯結果快取在 WSL 的 `~/.cache/jax`；JAX 或模型升級後若啟動變慢或出錯，刪掉它重新編譯。
-- 單獨測一個 agent：在 WSL 裡用 `run_band.sh` 相同的環境變數執行 `python test_mrt2.py`。
-- 測跟拍與調性：`python band_mrt2.py --no-visual --record /tmp/rec.wav` 把各樂器分軌存成 12 聲道 wav（順序同 `AGENTS` 再加鼓）；檔案要寫在 WSL 本機硬碟，寫到 `/mnt/c` 會斷音。MRT2 的 agent 都收到「沒有鼓點」的條件；memphis 的風格描述不寫 rap（會帶出鼓）、貝斯改用 808 取樣後，量測下來沒有任何 agent 有鎖在拍點上的打擊聲。
+- MRT2 的樂器出聲一律比鼓點條件晚約 2 幀（70 ms），所以鼓延後 2 幀（`DRUM_LAG`）才對齊；提示詞裡寫「rap」會讓 MRT2 的樂器偷偷帶鼓，所以 memphis 的風格描述只寫 dark and moody。
