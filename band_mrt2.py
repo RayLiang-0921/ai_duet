@@ -37,13 +37,14 @@ STYLES = {  # 每種風格：hi-hat 每拍幾個、各 agent 的提示詞；prom
     "neo soul": {"hat_div": 2,
                  "prompts": {"rhodes": "solo rhodes electric piano", "guitar": "solo electric guitar",
                              "bass": "solo electric bass", "strings": "cinematic strings", "bell": "digital bell"}},
-    "memphis rap": {"hat_div": 4, "prompt": "dark memphis rap, no drums", "mode": "minor",  # 一律用小調，比較暗
+    "memphis rap": {"hat_div": 4, "prompt": "dark and moody", "mode": "minor",  # 提示詞不寫 rap（會帶出鼓），一律小調
                     "prompts": {"rhodes": "solo rhodes electric piano", "guitar": "solo electric guitar",
                                 "bass": "deep sub bass",  # "808 bass" 的長滑音跟不上拍子
                                 "strings": "cinematic strings", "bell": "digital bell"}},
 }
 PHRASE_BARS = 4             # 風格與編制在每段（4 小節）的開頭變，不在半途變
 DROP_P, REJOIN_P = 0.3, 0.6  # 每段開頭：在場的樂器退出的機率、退出的樂器回來的機率（至少留 3 個）
+BLENDS = (0.25, 0.5, 0.75)  # 切換風格前的最後一小節，提示詞逐拍混合過去，接得比較順
 NEXT_CHORD = {  # 和弦進行自己走：每小節從上一個和弦的常見去處隨機挑一個（級數，0 = 主和弦）
     "minor": {0: [3, 5, 6, 2], 2: [5, 3, 0], 3: [4, 6, 0, 5], 4: [0, 5, 3], 5: [3, 6, 2, 0], 6: [0, 2, 5]},
     "major": {0: [5, 3, 1, 4], 1: [4, 6, 3], 3: [4, 0, 1, 5], 4: [0, 5, 3], 5: [3, 1, 4, 0], 6: [0, 4]},
@@ -60,6 +61,7 @@ VISUAL_TCP = ("127.0.0.1", 47601)  # 視覺程式 vj_tk.py（Windows 端）連�
 GROOVE_TCP = ("127.0.0.1", 47602)  # 鼓手 groove_server.py 聽這裡
 SAMPLES = {36: ("kick", 1.0), 38: ("snare", 1.0), 42: ("hihat", 0.7), 46: ("openhat", 0.7),  # GrooVAE 的鼓音高 → (取樣, 音量)
            45: ("rim", 0.8), 48: ("rim", 0.8), 50: ("rim", 0.8), 49: ("openhat", 0.6), 51: ("openhat", 0.5)}  # 取樣在 samples/<風格>/
+# samples/<風格>/808.wav 存在時，那種風格的貝斯改由 808 取樣跟著大鼓打（音高 = 和弦根音），取代 MRT2 的貝斯
 FFT_FREQ = np.fft.rfftfreq(1920, 1 / 48000)
 WINDOW = np.hanning(1920).astype(np.float32)
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -167,33 +169,30 @@ def agent_conditioning(agent: str, frame: int, root: int, mode: str, tokens: dic
     - Rhodes：和弦（C3–B4），每拍起音；吉他：和弦（C3–B3），每個八分音符起音；鐘（bell）：和弦（C5–B6），每拍起音
     - 弦樂：和弦（G3–F#5），每小節起音一次後一直持續（鋪底）
     - 貝斯：根音，斷奏八分音符（明確給停止點，才會彈出有節奏的貝斯線）
-    - 人類按鍵時：Rhodes、吉他、弦樂改彈人類的音；貝斯跟人類最低的音
+    - 人類按鍵時：其他樂器在自己的音域彈人類按的音級（剛按下時有起音）、更聽話；貝斯跟人類最低的音
     """
     steps = tm.SCALES[mode]
     scale = {(root + s) % 12 for s in steps}
-    chord = [(root + steps[(degree + k) % 7]) % 12 for k in (0, 2, 4)]
+    chord = {(root + steps[(degree + k) % 7]) % 12 for k in (0, 2, 4)}
     sounding, onsets = human
     other = lambda p: -1 if p % 12 in scale else 0  # 調內音交給模型，調外音靜音
 
     cond = {"mulan_tokens_25hz": tokens[agent], "drum_pianoroll_tokens": [0]}  # 鼓點 0：這些 agent 不打鼓
     cfg = {"notes": 2.0, "drums": 5.0}
     if agent == "bass":
-        bass_pc = min(sounding) % 12 if sounding else chord[0]
+        bass_pc = min(sounding) % 12 if sounding else min(chord, key=lambda p: (p - root) % 12 != steps[degree % 7])
         eighth = tm.count(frame, BPM * 2)
         since = frame - math.ceil(eighth * tm.FRAMES_PER_MIN / (BPM * 2))  # 這個八分音符開始後第幾幀
         v = 2 if since == 0 else (1 if since <= 3 else 0)                  # 起音、持續 120 ms、停
         roll = [v if 28 <= p < 48 and p % 12 == bass_pc else other(p) for p in range(128)]
-    elif sounding:
-        roll = [0] * 128
-        for p in sounding:
-            roll[p] = 2 if p in onsets else 1
-    elif agent == "strings":
-        on = 2 if tm.starts(frame, BPM / 4) else 1
-        roll = [on if 55 <= p < 79 and p % 12 in chord else other(p) for p in range(128)]
     else:
-        lo, hi, per_minute = {"rhodes": (48, 72, BPM), "guitar": (48, 60, BPM * 2), "bell": (72, 96, BPM)}[agent]
-        on = 2 if tm.starts(frame, per_minute) else 3
-        roll = [on if lo <= p < hi and p % 12 in chord else other(p) for p in range(128)]
+        lo, hi, per_minute = {"rhodes": (48, 72, BPM), "guitar": (48, 60, BPM * 2), "bell": (72, 96, BPM),
+                              "strings": (55, 79, BPM / 4)}[agent]
+        if sounding:
+            pcs, on, cfg["notes"] = {p % 12 for p in sounding}, 2 if onsets else 1, 3.5
+        else:
+            pcs, on = chord, 2 if tm.starts(frame, per_minute) else (1 if agent == "strings" else 3)
+        roll = [on if lo <= p < hi and p % 12 in pcs else other(p) for p in range(128)]
     if agent == "strings":
         cfg["musiccoca"] = 4.0  # 加強風格提示，弦樂聽起來才像弦樂
     cond["pianoroll_with_onsets_tokens"] = roll
@@ -301,9 +300,23 @@ class Drummer:
     def __init__(self, seed: int) -> None:
         self.samples = {st: {n: load_sample(os.path.join(HERE, "samples", st, f"{n}.wav")) for n, _ in SAMPLES.values()}
                         for st in STYLES}
+        self.s808 = {}  # 風格 → {根音音級: 調好音高的 808 取樣}
+        for st in STYLES:
+            path = os.path.join(HERE, "samples", st, "808.wav")
+            if os.path.exists(path):
+                y = load_sample(path, 3.0)
+                spec = np.abs(np.fft.rfft(y[4800:28800].mean(1) * np.hanning(24000), n=1 << 18))  # 取樣的基頻（25–200 Hz 最強處）
+                fr = np.fft.rfftfreq(1 << 18, 1 / 48000)
+                f0 = fr[np.argmax(np.where((fr > 25) & (fr < 200), spec, 0))]
+                self.s808[st] = {}
+                for pc in range(12):  # 根音放在 G#1–G2
+                    ratio = 440 * 2 ** (((36 + pc if pc <= 7 else 24 + pc) - 69) / 12) / f0
+                    idx = np.arange(0, len(y) - 1, ratio)
+                    self.s808[st][pc] = np.stack([np.interp(idx, np.arange(len(y)), y[:, c]) for c in (0, 1)], 1).astype(np.float32)
         self.rng, self.kicks = random.Random(seed), {0, 6, 10}
         self.played, self.net, self.io = {}, threading.Lock(), None  # played[段] = [(秒, 音高, 力度)]；一次只送一個請求
         self.pending, self.buf = [], np.zeros((2 * 48000, 2), np.float32)  # pending：等著發聲的 (取樣位置, 音高, 力度)
+        self.buf808 = np.zeros((4 * 48000, 2), np.float32)
 
     def pattern(self, seg: int) -> list:
         """鼓機：第 seg 段（2 小節）的 [(16 分音符位置 0–31, 音高)]。"""
@@ -350,8 +363,9 @@ class Drummer:
                 print(f"[鼓手] GrooVAE 沒回應（{e}），第 {seg} 段用鼓機的 pattern", flush=True)
                 self.io = None
 
-    def frame(self, frame: int, style: str) -> np.ndarray:
-        """這一幀的鼓聲 (1920, 2)。段落開頭把這段的演奏排進 pending、並準備下一段；風格決定鼓組和 hi-hat 密度。"""
+    def frame(self, frame: int, style: str, root_pc: int) -> tuple:
+        """這一幀的 (鼓聲, 808 貝斯或 None)，各 (1920, 2)。段落開頭把這段的演奏排進 pending、並準備下一段；
+        風格決定鼓組和 hi-hat 密度；有 808 的風格，每個大鼓同時打一個 root_pc 音高的 808（單音，新的會切掉舊的）。"""
         start, hat_div = frame * 1920, STYLES[style]["hat_div"]
         if tm.starts(frame, BPM / 8):  # 每 2 小節一段
             seg, step = tm.count(frame, BPM / 8), 60 / BPM / 4
@@ -364,19 +378,34 @@ class Drummer:
             name, gain = SAMPLES[p]
             y = self.samples[style][name]
             self.buf[pos - start: pos - start + len(y)] += gain * (v / 127) ** 0.5 * y  # 力度曲線：輕的不會太小聲
+            if p == 36 and style in self.s808:
+                i, y = pos - start, self.s808[style][root_pc]
+                self.buf808[i: i + 240] *= np.linspace(1, 0, 240)[:, None]  # 5 ms 內切掉上一個 808
+                self.buf808[i + 240:] = 0
+                self.buf808[i: i + len(y)] += 0.35 * (v / 127) ** 0.5 * y  # 取樣峰值 1，壓到跟 MRT2 貝斯差不多的音量
         out = self.buf[:1920].copy()
         self.buf[:-1920] = self.buf[1920:]
         self.buf[-1920:] = 0
-        return out
+        bass = None
+        if style in self.s808:
+            bass = self.buf808[:1920].copy()
+            self.buf808[:-1920] = self.buf808[1920:]
+            self.buf808[-1920:] = 0
+        return out, bass
 
 
-def encode(mrt, prompt: str) -> list:
-    return list(mrt.tokenize_style(mrt.embed_style(prompt)))
-
-
-def encode_style(mrt, style: str) -> dict:
-    """一種風格所有 agent 的提示詞 → 風格 token。調性靠和弦音符維持，提示詞寫不寫調名測起來沒差，所以不寫、不用重編碼。"""
-    return {a: encode(mrt, f"{p}, {STYLES[style].get('prompt', style)}") for a, p in STYLES[style]["prompts"].items()}
+def style_tokens(mrt) -> dict:
+    """每種風格各 agent 的提示詞 → 風格 token；另外兩種風格之間 BLENDS 比例的混合（embedding 加權平均），切換前用。
+    調性靠和弦音符維持，提示詞寫不寫調名測起來沒差，所以不寫。回傳 {風格: {agent: tokens}, (從, 到, 比例): {agent: tokens}}。"""
+    emb = {s: {a: np.asarray(mrt.embed_style(f"{p}, {STYLES[s].get('prompt', s)}")) for a, p in STYLES[s]["prompts"].items()}
+           for s in STYLES}
+    tok = lambda e: list(mrt.tokenize_style(e))
+    tokens = {s: {a: tok(e) for a, e in es.items()} for s, es in emb.items()}
+    for s1 in STYLES:
+        for s2 in STYLES:
+            for w in BLENDS if s1 != s2 else ():
+                tokens[(s1, s2, w)] = {a: tok((1 - w) * emb[s1][a] + w * emb[s2][a]) for a in AGENTS}
+    return tokens
 
 
 def midi_bridge() -> None:
@@ -441,7 +470,7 @@ def main() -> None:
         print(f"[鼓手] 找不到 {GROOVE_PYTHON}，鼓只用鼓機的 pattern", flush=True)
     mrt = tm.MagentaRT2Jax(size="mrt2_small", temperature=TEMPERATURE)
     band = BatchedMRT2(mrt, len(AGENTS))
-    tokens = {s: encode_style(mrt, s) for s in styles}  # 兩種風格都先準備好，切換時不用等
+    tokens = style_tokens(mrt)  # 兩種風格和中間的混合都先準備好，切換時不用等
 
     # 先編譯，人類開始彈時就不用等。要算兩次：第二次的狀態來自第一次的輸出，型別略有不同，JAX 會再編譯一次（約 5 秒）
     rows = [band.frame_row([agent_conditioning(a, f, 0, "major", tokens[styles[0]], (set(), set()))
@@ -490,6 +519,7 @@ def main() -> None:
                 switch.clear()
                 pending = styles[(styles.index(pending or style) + 1) % len(styles)]
                 print(f"🔀 下一段開頭切換到 {pending}", flush=True)
+                link.send(f"p|{pending}")
             sounding, onsets = human.take()
             played = detect_chord(sounding) if len(sounding) >= 2 else None  # 彈和弦 → 和弦進行從那個和弦接下去
             if played and (played[0] - root) % 12 in steps:
@@ -506,22 +536,28 @@ def main() -> None:
                         degree, human_degree = human_degree, None
                     elif bar > 0:
                         degree = rng.choice(NEXT_CHORD[mode].get(degree, [0]))
-                    if bar % PHRASE_BARS == 0 and bar > 0:  # 編制：隨機退出或回來，至少留 3 個
+                    if bar % PHRASE_BARS == PHRASE_BARS - 1:  # 編制：下一段誰在場，這一小節慢慢淡入淡出過去；至少留 3 個
                         target = {a: float(rng.random() >= (DROP_P if on else 1 - REJOIN_P)) for a, on in target.items()}
                         for a in rng.sample(list(target), 3 - int(sum(target.values()))) if sum(target.values()) < 3 else ():
                             target[a] = 1.0
-                        print("🎚 這段：" + "、".join(a for a, on in target.items() if on), flush=True)
+                        print("🎚 下一段：" + "、".join(a for a, on in target.items() if on), flush=True)
                 frame_styles.append(styles.index(style))
-                drums.append(drummer.frame(frame + k, style))
-                rows.append(band.frame_row([agent_conditioning(a, frame + k, root, mode, tokens[style],
+                bar_beat = tm.count(frame + k, BPM) % 4
+                blend = pending and bar % PHRASE_BARS == PHRASE_BARS - 1 and bar_beat > 0  # 切換前最後一小節逐拍混合
+                tok = tokens[(style, pending, BLENDS[bar_beat - 1])] if blend else tokens[style]
+                root_pc = min(sounding) % 12 if sounding else (root + steps[degree % 7]) % 12
+                drums.append(drummer.frame(frame + k, style, root_pc))
+                rows.append(band.frame_row([agent_conditioning(a, frame + k, root, mode, tok,
                                                                (sounding, onsets if k == 0 else set()), degree)
                                             for a in AGENTS]))
             t0 = time.perf_counter()
             audio, state = band.generate(rows, state)
             gen_ms.append((time.perf_counter() - t0) * 1000 / FRAMES_PER_CALL)
             for k in range(FRAMES_PER_CALL):
-                active = {a: g + (target[a] - g) * 0.2 for a, g in active.items()}  # 約 10 幀淡入淡出
-                stems = {a: audio[k, i] * active[a] for i, a in enumerate(AGENTS)} | {"drums": drums[k] * active["drums"]}
+                active = {a: g + ((1.0 if sounding else target[a]) - g) * 0.04 for a, g in active.items()}  # 約一小節淡入淡出；人類彈琴時全員回來
+                stems = {a: audio[k, i] * active[a] for i, a in enumerate(AGENTS)} | {"drums": drums[k][0] * active["drums"]}
+                if drums[k][1] is not None:
+                    stems["bass"] = drums[k][1] * active["bass"]  # 這種風格的貝斯是 808
                 if rec:
                     rec.write(np.concatenate(list(stems.values()), axis=1))
                 mix = MASTER * sum(mix_gains[a] * s for a, s in stems.items())

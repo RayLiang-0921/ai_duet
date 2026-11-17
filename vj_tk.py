@@ -295,7 +295,7 @@ class Show:
             self.mel = max(self.mel, min(1, m))
             if int(sidx) != self.scene:
                 self.scene = int(sidx)
-                self.show_text(self.style_names[self.scene], "", 3)
+                self.show_text(self.style_names[self.scene], "風格切換", 4)
         elif line.startswith("n "):
             down, note = map(int, line[2:].split())
             if down:
@@ -307,6 +307,8 @@ class Show:
             style = line[2:]
             self.started, self.scene = False, self.style_names.index(style) if style in self.style_names else 0
             self.show_text("彈一個和弦，樂團就會跟著你", f"風格：{style}（按空白鍵切換）")
+        elif line.startswith("p|"):  # 已經按了切換，下一段生效
+            self.show_text(line[2:], "下一段開始")
         elif line.startswith("k|"):  # 開始：調名|風格
             key_name, style = line[2:].split("|")
             self.started = True
