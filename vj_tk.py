@@ -257,7 +257,7 @@ class Show:
         self.kick_age, self.tone, self.tone_t, self.mel_pos, self.mel_pos_t = 9.0, .2, .2, .5, .5
         self.started, self.started_f, self.notes, self.prev = False, 0.0, set(), {}
         self.text, self.text_t, self.text_a, self.text_until = None, ("樂團準備中…", ""), 0.0, 1e9
-        self.style_names = ["neo soul", "memphis rap"]
+        self.style_names, self.switch_key = ["neo soul", "memphis rap"], "C2"
 
     def onset(self, key: str, v: float, ratio: float, floor: float) -> bool:
         p = self.prev.get(key, 0.0)
@@ -266,6 +266,11 @@ class Show:
 
     def show_text(self, big: str, small: str = "", seconds: float = 1e9) -> None:
         self.text_t, self.text_until = (big, small), time.perf_counter() + seconds
+
+    def hint(self) -> None:
+        """游標移動時提醒切換風格的鍵（開始前的等待畫面本來就寫著）。"""
+        if self.started:
+            self.show_text(self.style_names[self.scene], f"按 {self.switch_key} 切換風格", 3)
 
     def handle(self, line: str) -> None:
         if line.startswith("f "):
@@ -290,9 +295,10 @@ class Show:
                 self.hum, self.mel_pos_t = 1.0, min(1.0, max(0.0, (note - 48) / 36))
             else:
                 self.notes.discard(note)
-        elif line.startswith("w|"):  # 等待觀眾彈和弦；後面是目前選的風格
-            self.started, self.scene = False, self.style_names.index(line[2:]) if line[2:] in self.style_names else 0
-            self.show_text("彈一個和弦，樂團就會跟著你", f"風格：{line[2:]}（按最左邊的鍵切換）")
+        elif line.startswith("w|"):  # 等待觀眾彈和弦：w|目前選的風格|切換風格的鍵
+            style, self.switch_key = line[2:].split("|")
+            self.started, self.scene = False, self.style_names.index(style) if style in self.style_names else 0
+            self.show_text("彈一個和弦，樂團就會跟著你", f"風格：{style}（按最左邊的鍵 {self.switch_key} 切換）")
         elif line.startswith("k|"):  # 開始：調名|風格
             key_name, style = line[2:].split("|")
             self.started = True
@@ -463,7 +469,7 @@ def receive(show: Show, stop: threading.Event, on_lost) -> None:
 
 def demo(show: Show, stop: threading.Event) -> None:
     """沒有樂團時用的假資料：等 4 秒 → 開始 → 固定鼓點，每 8 小節換風格，偶爾彈音。"""
-    show.lines.put("w|neo soul")
+    show.lines.put("w|neo soul|C2")
     stop.wait(4)
     show.lines.put("k|D minor|neo soul")
     f = 0
@@ -501,6 +507,7 @@ def main() -> None:
     root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))
     root.bind("<f>", lambda e: root.attributes("-fullscreen", not root.attributes("-fullscreen")))
     root.bind("<q>", lambda e: root.destroy())
+    root.bind("<Motion>", lambda e: show.hint())
     if "--demo" in args:
         threading.Thread(target=demo, args=(show, stop), daemon=True).start()
     else:
