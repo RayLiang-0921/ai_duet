@@ -2,7 +2,7 @@
 
 五個 AI agent（Rhodes、吉他、貝斯、弦樂、digital bell）用 **Magenta RealTime 2 (MRT2)** 即時生成音訊，
 鼓手由鼓機排 pattern、**GrooVAE**（Magenta 的真人鼓手模型）補 hi-hat 和人味、one-shot 取樣發聲，一起 jam；
-觀眾用 MIDI 鍵盤彈和弦決定調性並啟動音樂（彈的音立刻有鋼琴聲），按住音時樂團跟著走，按最低鍵在下一段切換風格（neo soul ↔ memphis rap）。
+觀眾用 MIDI 鍵盤彈和弦決定調性並啟動音樂（彈的音立刻有鋼琴聲），按住音時樂團跟著走，在視覺視窗按空白鍵在下一段切換風格（neo soul ↔ memphis rap，memphis 一律小調、較暗）；每段樂器會隨機退出或加入，鼓每段結尾有過門。
 畫面由 tkinter + OpenGL 的視覺程式即時反應各樂器的音量、拍子和觀眾彈的音。
 
 ## 檔案
@@ -71,13 +71,13 @@ python -m venv venv
 1. 接上 MIDI 鍵盤，雙擊 `run_band.bat`（第一次啟動要編譯模型約 4 分鐘，之後有快取約 1 分半；視覺視窗會先出現等待畫面）。
 2. **彈一個和弦**：根音和大小調決定調性，那一刻就是第一拍，音樂與光束開始。彈的音由 Windows 內建合成器立刻發出鋼琴聲（`PIANO_PORT`），樂團的回應約 0.6 秒後跟上。
 3. 之後和弦進行會自己走（每小節從上一個和弦的常見去處挑一個）；**彈一個和弦**可以把進行導向那個和弦；**按住單音**時樂團跟著你彈的音。
-4. **按最低鍵（C2）** 切換風格，在下一段（4 小節）開頭生效；開始前按則是選擇起始風格。
-5. 視覺視窗：`Esc` 離開全螢幕、`F` 全螢幕、`Q` 結束；移動滑鼠會顯示切換風格的鍵。
+4. 在視覺視窗**按空白鍵**切換風格，在下一段（4 小節）開頭生效；開始前按則是選擇起始風格。
+5. 視覺視窗：`Esc` 離開全螢幕、`F` 全螢幕、`Q` 結束；移動滑鼠會提示切換風格的鍵。
 
 結束時終端機會印出每幀生成時間（中位數 / 95% / 最慢）和斷音次數；RTX 3050 Laptop 上五個 MRT2 agent 約 37 ms/幀（預算 40 ms）、0 次斷音、延遲約 0.6 秒；鼓的取樣發聲每幀只要 0.1 ms。
 
-主要設定都在 `band_mrt2.py` 開頭：`BPM`、`SWITCH_KEY`、`PIANO_PORT`、`STYLES`（各 agent 提示詞、hi-hat 密度）、`GAINS` / `PAN`、`NEXT_CHORD`（和弦進行）、`SAMPLES`（鼓音高對應的取樣）、`DRUM_LAG`（MRT2 的樂器比鼓點條件晚約 70 ms 出聲，鼓延後 2 幀對齊）。
-鼓的規則（小鼓在 2、4 拍；大鼓比小鼓多一點、通常不跟小鼓同時；open hat 每 4 小節一次或偶爾跟大鼓一起）在 `Drummer.pattern`，
+主要設定都在 `band_mrt2.py` 開頭：`BPM`、`PIANO_PORT`、`STYLES`（各 agent 提示詞、風格描述 `prompt`、強制調式 `mode`、hi-hat 密度）、`DROP_P` / `REJOIN_P`（每段樂器退出與回來的機率）、`GAINS` / `PAN`、`NEXT_CHORD`（和弦進行）、`SAMPLES`（鼓音高對應的取樣）、`DRUM_LAG`（MRT2 的樂器比鼓點條件晚約 70 ms 出聲，鼓延後 2 幀對齊）。
+鼓的規則（小鼓在 2、4 拍；大鼓比小鼓多一點、通常不跟小鼓同時；open hat 每 4 小節一次或偶爾跟大鼓一起；每段最後一拍多半有過門，每 8 小節偶爾整小節只剩小鼓滾奏）在 `Drummer.pattern`，
 每 2 小節提前送給 `groove_server.py` 加人味；GrooVAE 沒回應時就直接打鼓機的 pattern。
 
 ## 注意事項
@@ -88,4 +88,4 @@ python -m venv venv
 - 模型檔放在 `%USERPROFILE%\Documents\Magenta\magenta-rt-v2`（`MAGENTA_HOME`），第一次執行會自動下載。
 - JAX 的編譯結果快取在 WSL 的 `~/.cache/jax`；JAX 或模型升級後若啟動變慢或出錯，刪掉它重新編譯。
 - 單獨測一個 agent：在 WSL 裡用 `run_band.sh` 相同的環境變數執行 `python test_mrt2.py`。
-- 測跟拍與調性：`python band_mrt2.py --no-visual --record /tmp/rec.wav` 把各樂器分軌存成 12 聲道 wav（順序同 `AGENTS` 再加鼓）；檔案要寫在 WSL 本機硬碟，寫到 `/mnt/c` 會斷音。
+- 測跟拍與調性：`python band_mrt2.py --no-visual --record /tmp/rec.wav` 把各樂器分軌存成 12 聲道 wav（順序同 `AGENTS` 再加鼓）；檔案要寫在 WSL 本機硬碟，寫到 `/mnt/c` 會斷音。MRT2 的 agent 都收到「沒有鼓點」的條件，memphis 的提示詞再加上 no drums，量測下來只剩貝斯有一點點 hi-hat 味（6 kHz 以上的能量約 1%）。
