@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 在 WSL2 中以 GPU 執行 band_mrt2.py（四個 agent 的樂團），聲音經 WSLg 的 PulseAudio 送到 Windows 喇叭。
+# 在 WSL2 中以 GPU 執行 band_mrt2.py（四個 MRT2 agent 加 GrooVAE 鼓手），聲音經 WSLg 的 PulseAudio 送到 Windows 喇叭。
 set -euo pipefail
 
 cd "$(dirname "$0")"

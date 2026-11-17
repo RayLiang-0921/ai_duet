@@ -1,10 +1,13 @@
 """
-band_mrt2.py — 五個 MRT2 agent（Rhodes、吉他、貝斯、鼓、弦樂）組成的即時樂團，可在 neo soul 與 memphis rap 之間切換。
+band_mrt2.py — 四個 MRT2 agent（Rhodes、吉他、貝斯、弦樂）加一個鼓手（鼓機排 pattern、GrooVAE 加人味、one-shot 取樣發聲）
+組成的即時樂團，可在 neo soul 與 memphis rap 之間切換。
 彈一個和弦開始：和弦決定調（根音 + 大/小調），那一刻就是第一拍。之後和弦進行會自己走；
 按住音時樂團跟著你，彈一個和弦則讓和弦進行從那個和弦接下去。
 按 SWITCH_KEY（鍵盤最左邊的鍵）切換風格，在下一段（4 小節）開頭生效；開始前按則是選擇起始風格。
 執行：雙擊 run_band.bat（WSL GPU 環境）
 """
+import bisect
+import json
 import math
 import os
 import queue
@@ -16,27 +19,26 @@ import threading
 import time
 
 import numpy as np
-from scipy.signal import lfilter
+import soundfile as sf
+from scipy.signal import resample_poly
 
 import test_mrt2 as tm  # 共用時間計算、MIDI 接收等工具
 
 # ===== 設定 =====
-BPM = 75                    # 兩種風格共用；75 BPM 的 16 分音符剛好 5 幀（40 ms），鼓最穩（78 時 memphis 鼓會跑掉）
+BPM = 75                    # 兩種風格共用；75 BPM 的 16 分音符剛好 5 幀（40 ms）
 SWITCH_KEY = 36             # 這個鍵（含更低的鍵）用來切換風格，不當作音符；36 = C2，61 鍵鍵盤最左邊的鍵
 MIDI_PORT = None            # MIDI 鍵盤名稱；None = 第一個找到的
+GROOVE_PYTHON = "~/groove_venv/bin/python"  # 鼓手 groove_server.py（GrooVAE）的環境
 # ================
 
-AGENTS = ["rhodes", "guitar", "bass", "drums", "strings"]
-STYLES = {  # 每種風格：鼓點（每拍幾個、強度）、各 agent 的提示詞
-    "neo soul": {"drum_div": 2, "drum_cfg": 2.0,
+AGENTS = ["rhodes", "guitar", "bass", "strings"]
+STYLES = {  # 每種風格：hi-hat 每拍幾個、各 agent 的提示詞
+    "neo soul": {"hat_div": 2,
                  "prompts": {"rhodes": "solo rhodes electric piano", "guitar": "solo electric guitar",
-                             "bass": "solo electric bass",
-                             "drums": "dry drum kit, tight hi-hats, snappy snare",  # 要求銅鈸明顯會讓銅鈸拖長
-                             "strings": "cinematic strings"}},
-    "memphis rap": {"drum_div": 4, "drum_cfg": 4.0,  # 16 分音符 hi-hat；強度 2 時鼓常跑掉
+                             "bass": "solo electric bass", "strings": "cinematic strings"}},
+    "memphis rap": {"hat_div": 4,
                     "prompts": {"rhodes": "solo rhodes electric piano", "guitar": "solo electric guitar",
                                 "bass": "deep sub bass",  # "808 bass" 的長滑音跟不上拍子
-                                "drums": "memphis rap drums with cowbell and hi-hats",
                                 "strings": "cinematic strings"}},
 }
 PHRASE_BARS = 4             # 風格在每段（4 小節）的開頭切換，不在半途切
@@ -44,18 +46,21 @@ NEXT_CHORD = {  # 和弦進行自己走：每小節從上一個和弦的常見�
     "minor": {0: [3, 5, 6, 2], 2: [5, 3, 0], 3: [4, 6, 0, 5], 4: [0, 5, 3], 5: [3, 6, 2, 0], 6: [0, 2, 5]},
     "major": {0: [5, 3, 1, 4], 1: [4, 6, 3], 3: [4, 0, 1, 5], 4: [0, 5, 3], 5: [3, 1, 4, 0], 6: [0, 4]},
 }
-GAINS = {"rhodes": 0.8, "guitar": 0.8, "bass": 1.0, "drums": 1.12, "strings": 0.8}
+GAINS = {"rhodes": 0.8, "guitar": 0.8, "bass": 1.0, "drums": 0.7, "strings": 0.8}
 PAN = {"rhodes": -0.4, "guitar": 0.4, "bass": 0.0, "drums": 0.0, "strings": 0.0}  # −1 = 最左、+1 = 最右
-DRUM_BRIGHTEN = 6.0         # 鼓 5 kHz 以上提亮幾 dB，讓 hi-hat 聽得清楚
 MASTER = 0.85               # 整體音量；配合下面的限制器，混音的失真約 −49 dB
-TEMPERATURE = 1.1           # 取樣隨機度（MRT2 預設 1.3）：吉他、鼓更穩，貝斯不變
-FRAMES_PER_CALL = 5         # 一次在 GPU 上算幾幀：5 個 agent 時 5 幀約 34–38 ms/幀（預算 40 ms）
+TEMPERATURE = 1.1           # 取樣隨機度（MRT2 預設 1.3）：吉他更穩，貝斯不變
+FRAMES_PER_CALL = 5         # 一次在 GPU 上算幾幀：4 個 agent 時 5 幀約 34 ms/幀（預算 40 ms）
 QUEUE_FRAMES = 8            # 預先生成的幀數，太少會斷音、太多會增加延遲
 CHORD_SETTLE = 0.08         # 第一個音按下後等多久再判斷和弦（和弦的音不會剛好同時按下）
 CHORDS = {"major": (0, 4, 7), "minor": (0, 3, 7)}
 VISUAL_TCP = ("127.0.0.1", 47601)  # 視覺程式 vj_tk.py（Windows 端）連到這裡接收資料
+GROOVE_TCP = ("127.0.0.1", 47602)  # 鼓手 groove_server.py 聽這裡
+SAMPLES = {36: ("kick", 1.0), 38: ("snare", 1.0), 42: ("hihat", 0.7), 46: ("openhat", 0.7),  # GrooVAE 的鼓音高 → (取樣, 音量)
+           45: ("rim", 0.8), 48: ("rim", 0.8), 50: ("rim", 0.8), 49: ("openhat", 0.6), 51: ("openhat", 0.5)}
 FFT_FREQ = np.fft.rfftfreq(1920, 1 / 48000)
 WINDOW = np.hanning(1920).astype(np.float32)
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def detect_chord(notes) -> "tuple | None":
@@ -81,17 +86,6 @@ def pan_gains(position: float) -> np.ndarray:
     return np.array([np.cos(angle), np.sin(angle)], dtype=np.float32) * np.sqrt(2)
 
 
-def high_shelf(gain_db: float, f0: float = 5000, q: float = 0.7, sr: int = 48000) -> tuple:
-    """高頻棚架 EQ（RBJ biquad）：f0 以上提高 gain_db，回傳 (b, a) 給 scipy.signal.lfilter。"""
-    A, w = 10 ** (gain_db / 40), 2 * np.pi * f0 / sr
-    al, c = np.sin(w) / (2 * q), np.cos(w)
-    b = [A * ((A + 1) + (A - 1) * c + 2 * np.sqrt(A) * al), -2 * A * ((A - 1) + (A + 1) * c),
-         A * ((A + 1) + (A - 1) * c - 2 * np.sqrt(A) * al)]
-    a = [(A + 1) - (A - 1) * c + 2 * np.sqrt(A) * al, 2 * ((A - 1) - (A + 1) * c),
-         (A + 1) - (A - 1) * c - 2 * np.sqrt(A) * al]
-    return np.array(b) / a[0], np.array(a) / a[0]
-
-
 def limit(x: np.ndarray, threshold: float = 0.8) -> np.ndarray:
     """軟拐點限制器：threshold 以下完全不動，超過才柔和壓縮，避免爆音。"""
     a = np.abs(x)
@@ -101,7 +95,7 @@ def limit(x: np.ndarray, threshold: float = 0.8) -> np.ndarray:
 
 def levels(stems: dict) -> str:
     """一幀各樂器的聲音 → 給視覺的 8 個數值（大約 0–1）：大鼓、小鼓、hi-hat、貝斯、鍵盤、旋律、鍵盤音色、旋律高低。
-    除數是實際生成出來的音量的第 90 百分位，所以強的音約為 1。"""
+    除數是實際音量的第 90 百分位（鼓是 one-shot 取樣的重擊），所以強的音約為 1。"""
     mono = {a: s.mean(axis=1) for a, s in stems.items()}
     spectrum = lambda a: np.abs(np.fft.rfft(mono[a] * WINDOW)) ** 2
     rms = lambda a: float(np.sqrt((mono[a] ** 2).mean()))
@@ -109,7 +103,7 @@ def levels(stems: dict) -> str:
                                                / math.log2(hi / lo)))
     D = spectrum("drums")
     band = lambda lo, hi: float(np.sqrt(D[(FFT_FREQ >= lo) & (FFT_FREQ < hi)].sum())) / 1920
-    v = [band(0, 150) / 0.06, band(150, 2500) / 0.04, band(6000, 24000) / 0.02, rms("bass") / 0.15,
+    v = [band(0, 150) / 0.2, band(150, 2500) / 0.1, band(6000, 24000) / 0.07, rms("bass") / 0.15,
          (rms("rhodes") + rms("strings")) / 0.25, rms("guitar") / 0.15,  # 弦樂一直在，鍵盤除數放大才不會整個畫面過亮
          centroid(spectrum("rhodes"), 200, 2000), centroid(spectrum("guitar"), 150, 3000)]
     return " ".join(f"{min(x, 2.0):.2f}" for x in v)
@@ -149,15 +143,14 @@ class VisualLink:
                     c.close()
 
 
-def agent_conditioning(agent: str, frame: int, root: int, mode: str, style: dict, tokens: dict,
+def agent_conditioning(agent: str, frame: int, root: int, mode: str, tokens: dict,
                        human: tuple, degree: int = 0) -> tuple:
     """回傳某個 agent 這一幀的 (conditioning, cfg_scales)。human = (正在按的音, 剛按下的音)；degree = 這小節的和弦級數。
 
     - Rhodes：和弦（C3–B4），每拍起音；吉他：和弦（C3–B3），每個八分音符起音
     - 弦樂：和弦（G3–F#5），每小節起音一次後一直持續（鋪底）
     - 貝斯：根音，斷奏八分音符（明確給停止點，才會彈出有節奏的貝斯線）
-    - 鼓：不送音符，依風格每個八分或十六分音符送鼓點
-    - 人類按鍵時：Rhodes、吉他、弦樂改彈人類的音；貝斯跟人類最低的音；鼓不受影響
+    - 人類按鍵時：Rhodes、吉他、弦樂改彈人類的音；貝斯跟人類最低的音
     """
     steps = tm.SCALES[mode]
     scale = {(root + s) % 12 for s in steps}
@@ -165,11 +158,8 @@ def agent_conditioning(agent: str, frame: int, root: int, mode: str, style: dict
     sounding, onsets = human
     other = lambda p: -1 if p % 12 in scale else 0  # 調內音交給模型，調外音靜音
 
-    cond = {"mulan_tokens_25hz": tokens[agent], "drum_pianoroll_tokens": [0]}
+    cond = {"mulan_tokens_25hz": tokens[agent], "drum_pianoroll_tokens": [0]}  # 鼓點 0：這些 agent 不打鼓
     cfg = {"notes": 2.0, "drums": 5.0}
-    if agent == "drums":
-        cond["drum_pianoroll_tokens"] = [int(tm.starts(frame, BPM * style["drum_div"]))]
-        return cond, {"drums": style["drum_cfg"]}
     if agent == "bass":
         bass_pc = min(sounding) % 12 if sounding else chord[0]
         eighth = tm.count(frame, BPM * 2)
@@ -273,6 +263,90 @@ class Human(tm.HumanNotes):
             return set(self._held)
 
 
+def load_sample(path: str, max_s: float = 1.5) -> np.ndarray:
+    """one-shot 取樣 → 48 kHz 立體聲、最長 max_s 秒、尾端 10 ms 淡出、峰值 1。"""
+    y, sr = sf.read(path, dtype="float32")
+    y = y if y.ndim == 2 else np.stack([y, y], 1)
+    if sr != 48000:
+        y = resample_poly(y, 48000, sr, axis=0).astype(np.float32)
+    y = y[: int(max_s * 48000)]
+    y[-480:] *= np.linspace(1, 0, min(480, len(y)))[:, None]
+    return y / (np.abs(y).max() + 1e-9)
+
+
+class Drummer:
+    """鼓手。鼓機照規則排每 2 小節的大鼓 / 小鼓 / open hat：小鼓在 2、4 拍；大鼓比小鼓多一點、通常不跟小鼓同時；
+    open hat 每 4 小節一次或偶爾跟大鼓一起；每小節變化一點。排好的 pattern 提前一段送給 groove_server.py（GrooVAE）
+    補 hi-hat、力度和微小的提前延後，再用 one-shot 取樣發聲；沒拿到回覆就直接打鼓機的 pattern。"""
+    SNARE, KICK_POOL = (4, 12), (6, 7, 10, 11, 14, 3, 9, 13)
+
+    def __init__(self, seed: int) -> None:
+        self.samples = {n: load_sample(os.path.join(HERE, "samples", f"{n}.wav")) for n, _ in SAMPLES.values()}
+        self.rng, self.kicks = random.Random(seed), {0, 6, 10}
+        self.played, self.net, self.io = {}, threading.Lock(), None  # played[段] = [(秒, 音高, 力度)]；一次只送一個請求
+        self.pending, self.buf = [], np.zeros((2 * 48000, 2), np.float32)  # pending：等著發聲的 (取樣位置, 音高, 力度)
+
+    def pattern(self, seg: int) -> list:
+        """鼓機：第 seg 段（2 小節）的 [(16 分音符位置 0–31, 音高)]。"""
+        r, notes = self.rng, []
+        for bar in (2 * seg, 2 * seg + 1):
+            if r.random() < 0.5:  # 變化：拿掉或加一個大鼓（第一拍不動，共 2–4 個）
+                extra = sorted(self.kicks - {0})
+                if extra and (len(extra) >= 3 or r.random() < 0.5):
+                    self.kicks.discard(r.choice(extra))
+                else:
+                    self.kicks.add(r.choice(self.KICK_POOL))
+            if r.random() > 0.1:
+                self.kicks -= set(self.SNARE)
+            oh = {14} if bar % 4 == 3 else ({r.choice(sorted(self.kicks))} if r.random() < 0.15 else set())
+            hits = [(s, 36) for s in self.kicks] + [(s, 38) for s in self.SNARE] + [(s, 46) for s in oh]
+            notes += [(16 * (bar % 2) + s, p) for s, p in hits]
+        return notes
+
+    def prepare(self, seg: int) -> None:
+        """排第 seg 段的 pattern，先存鼓機版本，再在背景送去 GrooVAE（約 0.3 秒）換成演奏版本。"""
+        notes = self.pattern(seg)
+        self.played[seg] = [(s * 60 / BPM / 4, p, 100) for s, p in notes]
+        threading.Thread(target=self._ask, args=(seg, notes), daemon=True).start()
+
+    def _ask(self, seg: int, notes: list) -> None:
+        with self.net:
+            try:
+                for attempt in range(20):  # groove_server 還在載入時等它
+                    try:
+                        self.io = self.io or socket.create_connection(GROOVE_TCP, timeout=10).makefile("rw")
+                        break
+                    except ConnectionRefusedError:
+                        if attempt == 19:
+                            raise
+                        time.sleep(1)
+                self.io.write(json.dumps({"bpm": BPM, "notes": notes}) + "\n")
+                self.io.flush()
+                self.played[seg] = [tuple(n) for n in json.loads(self.io.readline())]
+            except (OSError, ValueError) as e:
+                print(f"[鼓手] GrooVAE 沒回應（{e}），第 {seg} 段用鼓機的 pattern", flush=True)
+                self.io = None
+
+    def frame(self, frame: int, hat_div: int) -> np.ndarray:
+        """這一幀的鼓聲 (1920, 2)。段落開頭把這段的演奏排進 pending、並準備下一段；hat_div = hi-hat 每拍幾個。"""
+        start = frame * 1920
+        if tm.starts(frame, BPM / 8):  # 每 2 小節一段
+            seg, step = tm.count(frame, BPM / 8), 60 / BPM / 4
+            self.prepare(seg + 1)
+            for t, p, v in self.played.pop(seg, []):
+                if p in SAMPLES and (p != 42 or round(t / step) % (4 // hat_div) == 0):  # neo soul 只留八分音符的 hi-hat
+                    bisect.insort(self.pending, (max(start, start + int(t * 48000)), p, v))
+        while self.pending and self.pending[0][0] < start + 1920:
+            pos, p, v = self.pending.pop(0)
+            name, gain = SAMPLES[p]
+            y = self.samples[name]
+            self.buf[pos - start: pos - start + len(y)] += gain * v / 127 * y
+        out = self.buf[:1920].copy()
+        self.buf[:-1920] = self.buf[1920:]
+        self.buf[-1920:] = 0
+        return out
+
+
 def encode(mrt, prompt: str) -> list:
     return list(mrt.tokenize_style(mrt.embed_style(prompt)))
 
@@ -284,33 +358,42 @@ def encode_style(mrt, style: str) -> dict:
 
 def start_windows(script: str, *args: str) -> "subprocess.Popen | None":
     """在 Windows 端用專案的 venv 執行 script：WSL 讀不到 USB MIDI（--midi-bridge），視窗也在 Windows 開（vj_tk.py）。"""
-    here = os.path.dirname(os.path.abspath(__file__))
-    win_python = os.path.join(here, "venv", "Scripts", "python.exe")
+    win_python = os.path.join(HERE, "venv", "Scripts", "python.exe")
     if not os.path.exists(win_python):
         print(f"[{script}] 找不到 Windows venv，略過", flush=True)
         return None
-    win_script = subprocess.run(["wslpath", "-w", os.path.join(here, script)],
+    win_script = subprocess.run(["wslpath", "-w", os.path.join(HERE, script)],
                                 capture_output=True, text=True).stdout.strip()
     return subprocess.Popen([win_python, win_script, *args], stdin=subprocess.DEVNULL)  # 不讓它吃掉這邊的 Enter
 
 
 def main() -> None:
+    import jax
     import pasimple  # 經 WSLg 播放到 Windows 喇叭
 
+    jax.config.update("jax_compilation_cache_dir", os.path.expanduser("~/.cache/jax"))  # 編譯結果存起來，第二次啟動快很多
+
     styles = list(STYLES)
-    mix_gains = {a: GAINS[a] * pan_gains(PAN[a]) for a in AGENTS}  # 每個 agent 的 [左, 右] 音量
+    mix_gains = {a: GAINS[a] * pan_gains(PAN[a]) for a in GAINS}  # 每個樂器的 [左, 右] 音量
     stop = threading.Event()
     link = VisualLink(stop)
     visual = None if "--no-visual" in sys.argv else start_windows("vj_tk.py")  # 視覺先開，載入模型時就看得到
+    groove_python, groove = os.path.expanduser(GROOVE_PYTHON), None
+    if os.path.exists(groove_python):
+        groove = subprocess.Popen([groove_python, os.path.join(HERE, "groove_server.py")], stdin=subprocess.DEVNULL)
+    else:
+        print(f"[鼓手] 找不到 {GROOVE_PYTHON}，鼓只用鼓機的 pattern", flush=True)
     mrt = tm.MagentaRT2Jax(size="mrt2_small", temperature=TEMPERATURE)
     band = BatchedMRT2(mrt, len(AGENTS))
     tokens = {s: encode_style(mrt, s) for s in styles}  # 兩種風格都先準備好，切換時不用等
 
     # 先編譯，人類開始彈時就不用等。要算兩次：第二次的狀態來自第一次的輸出，型別略有不同，JAX 會再編譯一次（約 5 秒）
-    rows = [band.frame_row([agent_conditioning(a, f, 0, "major", STYLES[styles[0]], tokens[styles[0]],
-                                               (set(), set())) for a in AGENTS]) for f in range(FRAMES_PER_CALL)]
+    rows = [band.frame_row([agent_conditioning(a, f, 0, "major", tokens[styles[0]], (set(), set()))
+                            for a in AGENTS]) for f in range(FRAMES_PER_CALL)]
     _, state = band.generate(rows, band.new_state(0))
     band.generate(rows, state)
+    drummer = Drummer(int(time.time()))
+    drummer.prepare(0)  # 第一段先排好，開始時不用等
 
     human = Human(link)
     audio_q: "queue.Queue[tuple]" = queue.Queue(maxsize=QUEUE_FRAMES)  # (混音, 給視覺的那一幀資料)
@@ -338,7 +421,6 @@ def main() -> None:
         print(f"🎵 {key_name}，{style}，開始！", flush=True)
         link.send(f"k|{key_name}|{style}")
         state, frame, pending = band.new_state(int(time.time()) % 10000 * 10), 0, None
-        eq, eq_state = high_shelf(DRUM_BRIGHTEN), np.zeros((2, 2))
         rng, degree, human_degree = random.Random(), 0, None
         steps = tm.SCALES[mode]
         while not stop.is_set():
@@ -350,7 +432,7 @@ def main() -> None:
             played = detect_chord(sounding) if len(sounding) >= 2 else None  # 彈和弦 → 和弦進行從那個和弦接下去
             if played and (played[0] - root) % 12 in steps:
                 human_degree = steps.index((played[0] - root) % 12)
-            rows, frame_styles = [], []
+            rows, frame_styles, drums = [], [], []
             for k in range(FRAMES_PER_CALL):
                 if tm.starts(frame + k, BPM / 4):  # 小節開頭：決定這小節的和弦；段落開頭才換風格，拍子不中斷
                     bar = tm.count(frame + k, BPM / 4)
@@ -361,20 +443,19 @@ def main() -> None:
                     elif bar > 0:
                         degree = rng.choice(NEXT_CHORD[mode].get(degree, [0]))
                 frame_styles.append(styles.index(style))
-                rows.append(band.frame_row([agent_conditioning(a, frame + k, root, mode, STYLES[style], tokens[style],
+                drums.append(drummer.frame(frame + k, STYLES[style]["hat_div"]))
+                rows.append(band.frame_row([agent_conditioning(a, frame + k, root, mode, tokens[style],
                                                                (sounding, onsets if k == 0 else set()), degree)
                                             for a in AGENTS]))
             t0 = time.perf_counter()
             audio, state = band.generate(rows, state)
             gen_ms.append((time.perf_counter() - t0) * 1000 / FRAMES_PER_CALL)
-            d = AGENTS.index("drums")  # 鼓提亮高頻；濾波器狀態 eq_state 接續上一批，幀與幀之間不會有接縫
-            drums, eq_state = lfilter(*eq, audio[:, d].reshape(-1, 2), axis=0, zi=eq_state)
-            audio[:, d] = drums.reshape(audio[:, d].shape)
             for k in range(FRAMES_PER_CALL):
-                mix = MASTER * sum(mix_gains[a] * audio[k, i] for i, a in enumerate(AGENTS))
+                stems = {a: audio[k, i] for i, a in enumerate(AGENTS)} | {"drums": drums[k]}
+                mix = MASTER * sum(mix_gains[a] * s for a, s in stems.items())
                 mix = np.ascontiguousarray(limit(mix), dtype=np.float32)
                 beat = (frame + k) * BPM / tm.FRAMES_PER_MIN
-                info = f"f {levels({a: audio[k, i] for i, a in enumerate(AGENTS)})} {beat:.2f} {frame_styles[k]}"
+                info = f"f {levels(stems)} {beat:.2f} {frame_styles[k]}"
                 while not stop.is_set():
                     try:
                         audio_q.put((mix, info), timeout=0.5)
@@ -418,7 +499,7 @@ def main() -> None:
     print("按 Enter 結束", flush=True)
     input()
     stop.set()
-    for p in (bridge, visual):
+    for p in (bridge, visual, groove):
         if p:
             p.terminate()
     for t in threads:  # 等生成結束再離開，否則 JAX 會當掉
