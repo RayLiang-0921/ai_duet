@@ -161,7 +161,7 @@ def main() -> None:
             for k in range(FRAMES_PER_CALL):
                 goal = lambda a: 0.0 if a in muted else (1.0 if sounding else target[a])  # 手動靜音優先；人類彈琴時全員回來
                 active = {a: g + (goal(a) - g) * (0.25 if a in snap else 0.04) for a, g in active.items()}  # 自動編制約一小節淡入淡出，手動約 0.2 秒
-                snap -= {a for a in snap if abs(goal(a) - active[a]) < 0.01}
+                snap.difference_update({a for a in snap if abs(goal(a) - active[a]) < 0.01})  # 就地改，不能用 -=（會變成區域變數）
                 stems = {a: audio[k, i] * active[a] for i, a in enumerate(AGENTS)} | {"drums": drums[k][0] * active["drums"]}
                 if drums[k][1] is not None:
                     stems["bass"] = drums[k][1] * active["bass"]  # 這種風格的貝斯是 808
