@@ -284,7 +284,7 @@ class Show:
     def mute(self, n: int) -> None:
         a = self.instruments[n - 1]
         self.muted.symmetric_difference_update({a})
-        self.send(f"m{n}")
+        self.send(f"m {a}")  # 送名字：樂團那邊的順序不一樣也不會對錯
         self.show_text(f"{a} {'靜音' if a in self.muted else '回來'}",
                        "靜音中：" + "、".join(a for a in self.instruments if a in self.muted) if self.muted else "", 3)
 
