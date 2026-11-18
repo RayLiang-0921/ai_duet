@@ -4,7 +4,7 @@ vj_tk.py — 樂團的視覺（Windows 端，tkinter 視窗內嵌 OpenGL，用�
 run_band.bat 會把 Windows 的 python 設成用內顯（圖形設定的「省電」），RTX 3050 留給生成音樂。
 畫面是你在網頁版設計的 shader；多了第五道光束（觀眾的 MIDI），音樂開始前沒有光束。
 單獨測試（不用模型）：venv\\Scripts\\python.exe vj_tk.py --demo
-鍵：Esc 離開全螢幕、F 全螢幕、Q 結束
+鍵：空白鍵切換風格、Enter 輸入風格、1–6 靜音、S 光柱名稱、P 暫停、Esc 離開全螢幕、F 全螢幕、Q 結束
 """
 import math
 import queue
@@ -163,8 +163,8 @@ void main(){
  col*=mix(.28+.07*sin(uTime*.6),1.,uStarted);   /* 音樂開始前：暗、慢慢呼吸 */
  col=col/(1.+col*.25);
  col=pow(col,vec3(.95));
- vec3 tt=texture2D(uText,vec2(uv.x,1.-uv.y)).rgb;   /* r = 提示文字、g = 光柱名稱、b = 名稱的描邊 */
- col*=1.-.7*tt.b*uStarted;
+ vec4 tt=texture2D(uText,vec2(uv.x,1.-uv.y));   /* r = 提示文字、a = 它的描邊、g = 光柱名稱、b = 名稱的描邊 */
+ col*=1.-.7*max(tt.b*uStarted,tt.a*uTextA);
  float tx=max(tt.r*uTextA,tt.g*uStarted);
  gl_FragColor=vec4(mix(col,vec3(.96,.92,.85),tx),1.);
 }
@@ -239,21 +239,23 @@ BEAM_X = (.167, .333, .5, .667, .833)  # 五道光柱的位置，和 shader 的 
 
 
 def draw_text(size: tuple, big: str, small: str = "", labels: tuple = ()) -> np.ndarray:
-    """RGB 貼圖：R = 中間的提示文字；G = 光柱底下的名稱；B = 名稱的深色描邊（亮的光柱上也看得清楚）。"""
-    img, lab, edge = (Image.new("L", size, 0) for _ in range(3))
+    """RGBA 貼圖：R = 中間的提示文字、A = 它的深色描邊；G = 光柱底下的名稱、B = 名稱的描邊（亮的光柱上也看得清楚）。"""
+    img, lab, edge, msg_edge = (Image.new("L", size, 0) for _ in range(4))
     d = ImageDraw.Draw(img)
     try:
         f1, f2 = ImageFont.truetype(FONT, size[1] // 14), ImageFont.truetype(FONT, size[1] // 28)
     except OSError:
         f1 = f2 = ImageFont.load_default()
-    d.text((size[0] / 2, size[1] * .46), big, fill=255, font=f1, anchor="mm")
-    if small:
-        d.text((size[0] / 2, size[1] * .56), small, fill=190, font=f2, anchor="mm")
+    de = ImageDraw.Draw(msg_edge)
+    for text, y, font, fill in ((big, .46, f1, 255), (small, .56, f2, 190)):
+        if text:
+            de.text((size[0] / 2, size[1] * y), text, fill=255, font=font, anchor="mm", stroke_width=4, stroke_fill=255)
+            d.text((size[0] / 2, size[1] * y), text, fill=fill, font=font, anchor="mm")
     for x, name in zip(BEAM_X, labels):
         pos = (size[0] * x, size[1] * .955)
         ImageDraw.Draw(edge).text(pos, name, fill=255, font=f2, anchor="mm", stroke_width=4, stroke_fill=255)
         ImageDraw.Draw(lab).text(pos, name, fill=255, font=f2, anchor="mm")
-    return np.stack([np.asarray(img), np.asarray(lab), np.asarray(edge)], axis=2)
+    return np.stack([np.asarray(img), np.asarray(lab), np.asarray(edge), np.asarray(msg_edge)], axis=2)
 
 
 class Show:
@@ -269,7 +271,8 @@ class Show:
         self.text, self.text_t, self.text_a, self.text_until = None, ("樂團準備中…", ""), 0.0, 1e9
         self.style_names, self.conn = ["neo soul", "memphis rap"], None  # conn：連到樂團的 socket，按鍵時送指令回去
         self.labels, self.labels_on = ("鼓", "貝斯", "你", "Rhodes", "吉他＋鐘"), False  # 光柱名稱（樂團會更新），S 鍵顯示/隱藏
-        self.instruments, self.muted, self.paused = ["rhodes", "guitar", "bass", "drums", "strings", "bell"], set(), False
+        self.instruments = ["Rhodes", "電吉他", "電貝斯", "鼓", "弦樂", "鐘"]  # 1–6 靜音鍵對應的樂器名稱（樂團會更新）
+        self.muted, self.paused, self.typing = set(), False, None  # muted：靜音中的鍵號；typing：正在打的風格（None = 沒在打字）
 
     def onset(self, key: str, v: float, ratio: float, floor: float) -> bool:
         p = self.prev.get(key, 0.0)
@@ -282,10 +285,10 @@ class Show:
     def hint(self) -> None:
         """游標移動時提醒按鍵（開始前的等待畫面本來就寫著）。"""
         if self.started:
-            self.show_text(self.style_names[self.scene], "空白鍵：切換風格   1–6：樂器靜音   S：光柱名稱   P：暫停   Q：結束", 3)
+            self.show_text(self.style_names[self.scene], "空白鍵：切換風格   Enter：輸入風格   1–6：樂器靜音   S：光柱名稱   P：暫停   Q：結束", 3)
 
     def send(self, command: str) -> None:
-        """把指令送回樂團：s 切換風格、m1–m6 樂器靜音、p 暫停/繼續、q 結束。"""
+        """把指令送回樂團：s 切換風格、m1–m6 樂器靜音、p 暫停/繼續、q 結束、t <文字> 新風格。"""
         try:
             if self.conn:
                 self.conn.sendall((command + "\n").encode())
@@ -293,11 +296,17 @@ class Show:
             pass
 
     def mute(self, n: int) -> None:
-        a = self.instruments[n - 1]
-        self.muted.symmetric_difference_update({a})
+        self.muted.symmetric_difference_update({n})
         self.send(f"m{n}")
-        self.show_text(f"{a} {'靜音' if a in self.muted else '關閉靜音'}",
-                       "靜音中：" + "、".join(a for a in self.instruments if a in self.muted) if self.muted else "", 3)
+        self.show_text(f"{self.instruments[n - 1]} {'靜音' if n in self.muted else '關閉靜音'}",
+                       "靜音中：" + "、".join(self.instruments[i - 1] for i in sorted(self.muted)) if self.muted else "", 3)
+
+    def submit(self) -> None:
+        """打字結束（Enter）：把風格描述送給樂團，樂團準備好後在下一段切過去。"""
+        text, self.typing = (self.typing or "").strip(), None
+        if text:
+            self.send(f"t {text}")
+            self.show_text(text, "送出了，準備中…", 30)
 
     def pause(self) -> None:
         self.paused = not self.paused
@@ -320,9 +329,7 @@ class Show:
             if self.onset("m", m, 1.25, .15) and not self.notes:
                 self.mel_pos_t = mpos
             self.mel = max(self.mel, min(1, m))
-            if int(sidx) != self.scene:
-                self.scene = int(sidx)
-                self.show_text(self.style_names[self.scene], "風格切換", 4)
+            self.scene = int(sidx)  # 視覺的配色；換風格的文字由樂團的 c| 訊息顯示
         elif line.startswith("n "):
             down, note = map(int, line[2:].split())
             if down:
@@ -330,10 +337,17 @@ class Show:
                 self.hum, self.mel_pos_t = 1.0, min(1.0, max(0.0, (note - 48) / 36))
             else:
                 self.notes.discard(note)
-        elif line.startswith("w|"):  # 等待觀眾彈和弦；後面是目前選的風格
-            style = line[2:]
-            self.started, self.scene = False, self.style_names.index(style) if style in self.style_names else 0
-            self.show_text("彈一個和弦，樂團就會跟著你", f"風格：{style}（按空白鍵切換）")
+        elif line.startswith("w|"):  # 等待觀眾彈和弦：w|目前選的風格|配色
+            style, scene = line[2:].split("|")
+            self.started, self.scene = False, int(scene)
+            self.show_text("彈一個和弦，樂團就會跟著你", f"風格：{style}（空白鍵切換、Enter 輸入風格）")
+        elif line.startswith("c|"):  # 剛切換了風格
+            self.show_text(line[2:], "風格切換", 4)
+        elif line.startswith("t|"):  # 樂團要顯示的文字：t|大字|小字|秒數
+            big, small, seconds = line[2:].split("|")
+            self.show_text(big, small, float(seconds))
+        elif line.startswith("i|"):  # 1–6 靜音鍵對應的樂器名稱
+            self.instruments = line[2:].split("|")
         elif line.startswith("p|"):  # 已經按了切換，下一段生效
             self.show_text(line[2:], "下一段開始")
         elif line.startswith("l|"):  # 五道光柱的名稱
@@ -358,7 +372,7 @@ class Show:
         self.flow += dt * (1 + self.bass * (2.6 if sc else 2))
         self.tone += (self.tone_t - self.tone) * min(1, dt * 1.5)
         self.mel_pos += (self.mel_pos_t - self.mel_pos) * min(1, dt * 12)
-        self.text_a += ((1.0 if now < self.text_until else 0.0) - self.text_a) * min(1, dt * 2)
+        self.text_a += ((1.0 if now < self.text_until or self.typing is not None else 0.0) - self.text_a) * min(1, dt * 2)
         self.kick *= math.exp(-dt * (8 if sc else 3))
         self.snare *= math.exp(-dt * 9)
         self.hat *= math.exp(-dt * 14)
@@ -427,7 +441,7 @@ class VJ(OpenGLFrame):
     def upload(self, unit: int, img: np.ndarray) -> None:
         GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.tex[unit])
-        fmt = GL.GL_RGB if img.ndim == 3 else GL.GL_LUMINANCE
+        fmt = {3: GL.GL_RGB, 4: GL.GL_RGBA}.get(img.shape[2], GL.GL_RGB) if img.ndim == 3 else GL.GL_LUMINANCE
         GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
         GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, fmt, img.shape[1], img.shape[0], 0, fmt,
                         GL.GL_UNSIGNED_BYTE, np.ascontiguousarray(img))
@@ -446,7 +460,8 @@ class VJ(OpenGLFrame):
                 self.upload(unit, draw_object(objs[i]))
             a = min(1, f * 4, (1 - f) * 4)
             fades.append(a * a * (3 - 2 * a))
-        text = (s.text_t, s.labels if s.labels_on else ())
+        shown = (s.typing + "▏", "輸入一個風格（英文描述效果最好）  Enter 送出、Esc 取消") if s.typing is not None else s.text_t
+        text = (shown, s.labels if s.labels_on else ())
         if text != self.text_shown:
             self.text_shown = text
             self.upload(2, draw_text((self.rw, self.rh), *text[0], labels=text[1]))
@@ -514,7 +529,7 @@ def receive(show: Show, stop: threading.Event, on_lost) -> None:
 
 def demo(show: Show, stop: threading.Event) -> None:
     """沒有樂團時用的假資料：等 4 秒 → 開始 → 固定鼓點，每 8 小節換風格，偶爾彈音。"""
-    show.lines.put("w|neo soul")
+    show.lines.put("w|neo soul|0")
     stop.wait(4)
     show.lines.put("k|D minor|neo soul")
     f = 0
@@ -551,15 +566,39 @@ def main() -> None:
     vj = VJ(root, show, shot, width=1280, height=720)
     vj.pack(fill=tk.BOTH, expand=True)
     vj.animate = 25  # 最多約 40 fps；畫得更快只是多佔 GPU
-    root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))
-    root.bind("<f>", lambda e: root.attributes("-fullscreen", not root.attributes("-fullscreen")))
-    root.bind("<q>", lambda e: (show.send("q"), root.destroy()))  # 連樂團一起結束
+    def on_key(e) -> None:
+        """所有按鍵。打字時字都進輸入框（Enter 送出、Esc 取消），其他鍵不作用。"""
+        if show.typing is not None:
+            if e.keysym == "Return":
+                show.submit()
+            elif e.keysym == "Escape":
+                show.typing = None
+            elif e.keysym == "BackSpace":
+                show.typing = show.typing[:-1]
+            elif e.char and e.char.isprintable() and len(show.typing) < 60:
+                show.typing += e.char
+            return
+        key = e.keysym.lower()
+        if key == "return":
+            show.typing = ""
+        elif key == "escape":
+            root.attributes("-fullscreen", False)
+        elif key == "f":
+            root.attributes("-fullscreen", not root.attributes("-fullscreen"))
+        elif key == "q":
+            show.send("q")  # 連樂團一起結束
+            root.destroy()
+        elif key == "space":
+            show.send("s")
+        elif key == "p":
+            show.pause()
+        elif key == "s":
+            show.labels_on = not show.labels_on
+        elif e.char in ("1", "2", "3", "4", "5", "6"):
+            show.mute(int(e.char))
+
+    root.bind("<Key>", on_key)
     root.bind("<Motion>", lambda e: show.hint())
-    root.bind("<space>", lambda e: show.send("s"))
-    root.bind("<p>", lambda e: show.pause())
-    root.bind("<s>", lambda e: setattr(show, "labels_on", not show.labels_on))
-    for n in range(1, 7):
-        root.bind(str(n), lambda e, n=n: show.mute(n))
     if "--demo" in args:
         threading.Thread(target=demo, args=(show, stop), daemon=True).start()
     else:

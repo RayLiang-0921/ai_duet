@@ -10,21 +10,37 @@ PIANO_PORT = "Microsoft GS Wavetable Synth"  # Windows 端發出鋼琴聲的合�
 GROOVE_PYTHON = "~/groove_venv/bin/python"  # 鼓手 groove_server.py（GrooVAE）的環境
 DRUM_LAG = 2                # 鼓延後幾幀：MRT2 的樂器比鼓點條件晚約 70 ms 出聲，鼓往後挪才對齊
 
-AGENTS = ["rhodes", "guitar", "bass", "strings", "bell"]  # MRT2 生成的五個樂器；鼓另外由 Drummer 負責
-STYLES = {  # 每種風格：hi-hat 每拍幾個、各 agent 的提示詞；prompt = 接在提示詞後的風格描述、mode = 強制的調式；
-            # kits = 可用的鼓組（samples/ 底下的資料夾）；bass808 = 貝斯改由跟著大鼓的 808 取樣打
-    "neo soul": {"hat_div": 2, "kits": ["neo soul", "rnb_2000s_soul_jazz", "band sound"],
-                 "prompts": {"rhodes": "solo rhodes electric piano", "guitar": "solo electric guitar",
-                             "bass": "solo electric bass", "strings": "cinematic strings", "bell": "digital bell"}},
-    "memphis rap": {"hat_div": 4, "prompt": "dark and moody", "mode": "minor",  # 提示詞不寫 rap（會帶出鼓），一律小調
-                    "kits": ["memphis rap", "trap", "modern trap"], "bass808": True,
-                    "prompts": {"rhodes": "solo rhodes electric piano", "guitar": "solo electric guitar",
-                                "bass": "deep sub bass",  # bass808 時這個 agent 被 808 取代
-                                "strings": "cinematic strings", "bell": "digital bell"}},
+AGENTS = ["keys", "rhythm", "bass", "pad", "lead"]  # MRT2 的五個位置：和弦、節奏、貝斯、鋪底、主旋律；鼓另外由 Drummer 負責
+STYLES = {  # 每種風格：prompt = 接在樂器提示詞後的風格描述（預設是風格名稱）、mode = 強制的調式、hat_div = hi-hat 每拍幾個、
+            # kits = 可用的鼓組（samples/ 底下的資料夾）、bass808 = 貝斯改由跟著大鼓的 808 取樣打、scene = 視覺的配色（0 或 1）
+            # 觀眾打字新增的風格會在執行時加進來（band/band.py 的 add_style），沿用當時風格的設定
+    "neo soul": {"hat_div": 2, "scene": 0, "kits": ["neo soul", "rnb_2000s_soul_jazz", "band sound"]},
+    "memphis rap": {"hat_div": 4, "scene": 1, "prompt": "dark and moody", "mode": "minor",  # 不寫 rap（會帶出鼓），一律小調
+                    "kits": ["memphis rap", "trap", "modern trap"], "bass808": True},
 }
-GAINS = {"rhodes": 0.8, "guitar": 0.8, "bass": 1.0, "drums": 0.7, "strings": 0.8, "bell": 0.5}
-PAN = {"rhodes": -0.4, "guitar": 0.4, "bass": 0.0, "drums": 0.0, "strings": 0.0, "bell": 0.2}  # −1 = 最左、+1 = 最右
+INSTRUMENTS = {  # 位置 → 風格 → [(顯示名稱, 提示詞, 音量)]；第一個是開場用的。某個位置被自動編制安排休息時，會換成池裡的另一個
+    # 音量 = tools/audition.py 量到的有聲時第 90 百分位，混音時拉到同一個大小。只收試音時沒走音、沒偷帶鼓聲或低頻的樂器：
+    # 例如 memphis 的 "dark and moody" 會讓長笛、豎琴、鋼琴冒出 100 Hz 以下的低頻（像在彈貝斯），digital bell 會帶 hi-hat
+    "keys": {"neo soul": [("Rhodes", "solo rhodes electric piano", .093), ("Wurlitzer", "wurlitzer electric piano", .154),
+                          ("管風琴", "hammond organ", .153)],
+             "memphis rap": [("Rhodes", "solo rhodes electric piano", .088), ("Wurlitzer", "wurlitzer electric piano", .106),
+                             ("管風琴", "hammond organ", .169)]},
+    "rhythm": {"neo soul": [("電吉他", "solo electric guitar", .073), ("尼龍吉他", "nylon string guitar", .102), ("豎琴", "harp", .070)],
+               "memphis rap": [("電吉他", "solo electric guitar", .127), ("悶音吉他", "muted funk guitar", .097)]},
+    "bass": {"neo soul": [("電貝斯", "solo electric bass", .118), ("無琴格貝斯", "fretless bass", .074), ("低音提琴", "upright bass", .087)],
+             "memphis rap": [("貝斯", "deep sub bass", .206)]},  # memphis 由 808 取代
+    "pad": {"neo soul": [("弦樂", "cinematic strings", .123), ("合唱", "choir", .120), ("大提琴", "cello", .083)],
+            "memphis rap": [("弦樂", "cinematic strings", .094), ("合唱", "choir", .105), ("暗色弦樂", "dark strings", .121)]},
+    "lead": {"neo soul": [("鐘", "digital bell", .106), ("音樂盒", "music box", .154), ("鐵琴", "vibraphone", .088), ("長笛", "flute", .073)],
+             "memphis rap": [("音樂盒", "music box", .106), ("鐵琴", "vibraphone", .133)]},
+}
+LEVEL = 0.1                 # 每個樂器先拉到這個音量，再乘 GAINS
+GAINS = {"keys": 0.8, "rhythm": 0.8, "bass": 1.0, "drums": 0.7, "pad": 0.8, "lead": 0.7}  # 順序 = 視覺 1–6 靜音鍵的順序
+PAN = {"keys": -0.4, "rhythm": 0.4, "bass": 0.0, "drums": 0.0, "pad": 0.0, "lead": 0.2}  # −1 = 最左、+1 = 最右
 MASTER = 0.85               # 整體音量；配合限制器，混音的失真約 −49 dB
+DRUM_WORDS = ("hip hop", "hip-hop", "hiphop", "boom bap", "drum and bass", "drum n bass", "rap", "trap", "drill", "drum",
+              "drums", "drumming", "beat", "beats", "percussion", "percussive", "cinematic", "epic", "breakbeat", "dnb",
+              "edm", "house", "techno", "dubstep", "reggaeton", "808", "kick", "snare", "hi-hat", "hihat")  # 打字的風格裡會帶出鼓聲的字，自動拿掉
 
 # ===== 曲式 =====
 PHRASE_BARS = 4             # 風格與編制在每段（4 小節）的開頭變，不在半途變

@@ -1,7 +1,9 @@
-"""MRT2：把五個 agent 合成一批在 GPU 上生成，以及風格提示詞的編碼。"""
-import numpy as np
+"""MRT2：把五個 agent 合成一批在 GPU 上生成，以及風格提示詞（文字 → token）。"""
+import hashlib
+import os
+import threading
 
-from band.settings import AGENTS, BLENDS, STYLES
+import numpy as np
 
 
 class BatchedMRT2:
@@ -60,15 +62,35 @@ class BatchedMRT2:
         return np.asarray(self.jax.device_get(out)).astype(np.float32) / 32768.0, state
 
 
-def style_tokens(mrt) -> dict:
-    """每種風格各 agent 的提示詞 → 風格 token；另外兩種風格之間 BLENDS 比例的混合（embedding 加權平均），切換前用。
-    調性靠和弦音符維持，提示詞寫不寫調名測起來沒差，所以不寫。回傳 {風格: {agent: tokens}, (從, 到, 比例): {agent: tokens}}。"""
-    emb = {s: {a: np.asarray(mrt.embed_style(f"{p}, {STYLES[s].get('prompt', s)}")) for a, p in STYLES[s]["prompts"].items()}
-           for s in STYLES}
-    tok = lambda e: list(mrt.tokenize_style(e))
-    tokens = {s: {a: tok(e) for a, e in es.items()} for s, es in emb.items()}
-    for s1 in STYLES:
-        for s2 in STYLES:
-            for w in BLENDS if s1 != s2 else ():
-                tokens[(s1, s2, w)] = {a: tok((1 - w) * emb[s1][a] + w * emb[s2][a]) for a in AGENTS}
-    return tokens
+class StyleBank:
+    """文字 → MRT2 風格 token（MusicCoCa 在 CPU 上跑，不搶 GPU；一句約 0.5 秒，開機後第一句要多 18 秒載入）。
+    embedding 存在硬碟 ~/.cache/ai_duet/style，第二次啟動不用重算。兩句之間的混合 = embedding 加權平均後再轉 token。
+    生成執行緒只用 get() 拿已經算好的；計算（warm）都在背景或開機時做，文字模型一次只給一個執行緒用。"""
+
+    def __init__(self, mrt) -> None:
+        self.mrt, self.emb, self.tok, self.lock = mrt, {}, {}, threading.Lock()
+        self.dir = os.path.expanduser("~/.cache/ai_duet/style")
+        os.makedirs(self.dir, exist_ok=True)
+
+    def _embedding(self, text: str) -> np.ndarray:
+        if text not in self.emb:
+            path = os.path.join(self.dir, hashlib.sha1(text.encode()).hexdigest() + ".npy")
+            if not os.path.exists(path):
+                np.save(path, np.asarray(self.mrt.embed_style(text)))
+            self.emb[text] = np.load(path)
+        return self.emb[text]
+
+    def warm(self, text: str, other: "str | None" = None, w: float = 0.0) -> list:
+        """算好並記住 text（或 text 往 other 混合 w）的 token。"""
+        key = (text, other, w)
+        if key not in self.tok:
+            with self.lock:
+                e = self._embedding(text)
+                if other is not None:
+                    e = (1 - w) * e + w * self._embedding(other)
+                self.tok[key] = list(self.mrt.tokenize_style(e))
+        return self.tok[key]
+
+    def get(self, text: str, other: "str | None" = None, w: float = 0.0) -> "list | None":
+        """已經算好的 token；還沒算好就回傳 None（不等）。"""
+        return self.tok.get((text, other, w))

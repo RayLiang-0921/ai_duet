@@ -26,8 +26,8 @@ def agent_conditioning(agent: str, frame: int, root: int, mode: str, tokens: dic
                        human: tuple, degree: int = 0) -> tuple:
     """回傳某個 agent 這一幀的 (conditioning, cfg_scales)。human = (正在按的音, 剛按下的音)；degree = 這小節的和弦級數。
 
-    - Rhodes：和弦（C3–B4），每拍起音；吉他：和弦（C3–B3），每個八分音符起音；鐘（bell）：和弦（C5–B6），每拍起音
-    - 弦樂：和弦（G3–F#5），每小節起音一次後一直持續（鋪底）
+    - keys（和弦）：C3–B4，每拍起音；rhythm（節奏）：C3–B3，每個八分音符起音；lead（主旋律）：C5–B6，每拍起音
+    - pad（鋪底）：G3–F#5，每小節起音一次後一直持續
     - 貝斯：根音，斷奏八分音符（明確給停止點，才會彈出有節奏的貝斯線）
     - 人類按鍵時：其他樂器在自己的音域彈人類按的音級（剛按下時有起音）、更聽話；貝斯跟人類最低的音
     """
@@ -46,14 +46,14 @@ def agent_conditioning(agent: str, frame: int, root: int, mode: str, tokens: dic
         v = 2 if since == 0 else (1 if since <= 3 else 0)                  # 起音、持續 120 ms、停
         roll = [v if 28 <= p < 48 and p % 12 == bass_pc else other(p) for p in range(128)]
     else:
-        lo, hi, per_minute = {"rhodes": (48, 72, BPM), "guitar": (48, 60, BPM * 2), "bell": (72, 96, BPM),
-                              "strings": (55, 79, BPM / 4)}[agent]
+        lo, hi, per_minute = {"keys": (48, 72, BPM), "rhythm": (48, 60, BPM * 2), "lead": (72, 96, BPM),
+                              "pad": (55, 79, BPM / 4)}[agent]
         if sounding:
             pcs, on, cfg["notes"] = {p % 12 for p in sounding}, 2 if onsets else 1, 3.5
         else:
-            pcs, on = chord, 2 if tm.starts(frame, per_minute) else (1 if agent == "strings" else 3)
+            pcs, on = chord, 2 if tm.starts(frame, per_minute) else (1 if agent == "pad" else 3)
         roll = [on if lo <= p < hi and p % 12 in pcs else other(p) for p in range(128)]
-    if agent == "strings":
-        cfg["musiccoca"] = 4.0  # 加強風格提示，弦樂聽起來才像弦樂
+    if agent == "pad":
+        cfg["musiccoca"] = 4.0  # 加強風格提示，鋪底的樂器聽起來才像那個樂器
     cond["pianoroll_with_onsets_tokens"] = roll
     return cond, cfg
