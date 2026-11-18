@@ -163,7 +163,9 @@ void main(){
  col*=mix(.28+.07*sin(uTime*.6),1.,uStarted);   /* 音樂開始前：暗、慢慢呼吸 */
  col=col/(1.+col*.25);
  col=pow(col,vec3(.95));
- float tx=texture2D(uText,vec2(uv.x,1.-uv.y)).r*uTextA;
+ vec3 tt=texture2D(uText,vec2(uv.x,1.-uv.y)).rgb;   /* r = 提示文字、g = 光柱名稱、b = 名稱的描邊 */
+ col*=1.-.7*tt.b*uStarted;
+ float tx=max(tt.r*uTextA,tt.g*uStarted);
  gl_FragColor=vec4(mix(col,vec3(.96,.92,.85),tx),1.);
 }
 """
@@ -233,8 +235,12 @@ def draw_object(name: str) -> np.ndarray:
     return np.asarray(img)[::-1].copy()  # OpenGL 的貼圖第一列在下面
 
 
-def draw_text(size: tuple, big: str, small: str = "") -> np.ndarray:
-    img = Image.new("L", size, 0)
+BEAM_X = (.167, .333, .5, .667, .833)  # 五道光柱的位置，和 shader 的 ibeams / hbeam 一致
+
+
+def draw_text(size: tuple, big: str, small: str = "", labels: tuple = ()) -> np.ndarray:
+    """RGB 貼圖：R = 中間的提示文字；G = 光柱底下的名稱；B = 名稱的深色描邊（亮的光柱上也看得清楚）。"""
+    img, lab, edge = (Image.new("L", size, 0) for _ in range(3))
     d = ImageDraw.Draw(img)
     try:
         f1, f2 = ImageFont.truetype(FONT, size[1] // 14), ImageFont.truetype(FONT, size[1] // 28)
@@ -243,7 +249,11 @@ def draw_text(size: tuple, big: str, small: str = "") -> np.ndarray:
     d.text((size[0] / 2, size[1] * .46), big, fill=255, font=f1, anchor="mm")
     if small:
         d.text((size[0] / 2, size[1] * .56), small, fill=190, font=f2, anchor="mm")
-    return np.asarray(img)
+    for x, name in zip(BEAM_X, labels):
+        pos = (size[0] * x, size[1] * .955)
+        ImageDraw.Draw(edge).text(pos, name, fill=255, font=f2, anchor="mm", stroke_width=4, stroke_fill=255)
+        ImageDraw.Draw(lab).text(pos, name, fill=255, font=f2, anchor="mm")
+    return np.stack([np.asarray(img), np.asarray(lab), np.asarray(edge)], axis=2)
 
 
 class Show:
@@ -258,6 +268,7 @@ class Show:
         self.started, self.started_f, self.notes, self.prev = False, 0.0, set(), {}
         self.text, self.text_t, self.text_a, self.text_until = None, ("樂團準備中…", ""), 0.0, 1e9
         self.style_names, self.conn = ["neo soul", "memphis rap"], None  # conn：連到樂團的 socket，按鍵時送指令回去
+        self.labels, self.labels_on = ("鼓", "貝斯", "你", "Rhodes", "吉他＋鐘"), False  # 光柱名稱（樂團會更新），S 鍵顯示/隱藏
         self.instruments, self.muted, self.paused = ["rhodes", "guitar", "bass", "drums", "strings", "bell"], set(), False
 
     def onset(self, key: str, v: float, ratio: float, floor: float) -> bool:
@@ -271,7 +282,7 @@ class Show:
     def hint(self) -> None:
         """游標移動時提醒按鍵（開始前的等待畫面本來就寫著）。"""
         if self.started:
-            self.show_text(self.style_names[self.scene], "空白鍵：切換風格   1–6：樂器靜音   P：暫停   Q：結束", 3)
+            self.show_text(self.style_names[self.scene], "空白鍵：切換風格   1–6：樂器靜音   S：光柱名稱   P：暫停   Q：結束", 3)
 
     def send(self, command: str) -> None:
         """把指令送回樂團：s 切換風格、m1–m6 樂器靜音、p 暫停/繼續、q 結束。"""
@@ -285,14 +296,14 @@ class Show:
         a = self.instruments[n - 1]
         self.muted.symmetric_difference_update({a})
         self.send(f"m{n}")
-        self.show_text(f"{a} {'靜音' if a in self.muted else '回來'}",
+        self.show_text(f"{a} {'靜音' if a in self.muted else '關閉靜音'}",
                        "靜音中：" + "、".join(a for a in self.instruments if a in self.muted) if self.muted else "", 3)
 
     def pause(self) -> None:
         self.paused = not self.paused
         self.send("p")
         if self.paused:
-            self.show_text("暫停", "再按 P 繼續")
+            self.show_text("暫停", "按 P 繼續")
         else:
             self.show_text(self.style_names[self.scene], "", 2)
 
@@ -325,6 +336,8 @@ class Show:
             self.show_text("彈一個和弦，樂團就會跟著你", f"風格：{style}（按空白鍵切換）")
         elif line.startswith("p|"):  # 已經按了切換，下一段生效
             self.show_text(line[2:], "下一段開始")
+        elif line.startswith("l|"):  # 五道光柱的名稱
+            self.labels = tuple(line[2:].split("|"))
         elif line.startswith("k|"):  # 開始：調名|風格
             key_name, style = line[2:].split("|")
             self.started = True
@@ -414,7 +427,9 @@ class VJ(OpenGLFrame):
     def upload(self, unit: int, img: np.ndarray) -> None:
         GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.tex[unit])
-        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_LUMINANCE, img.shape[1], img.shape[0], 0, GL.GL_LUMINANCE,
+        fmt = GL.GL_RGB if img.ndim == 3 else GL.GL_LUMINANCE
+        GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, fmt, img.shape[1], img.shape[0], 0, fmt,
                         GL.GL_UNSIGNED_BYTE, np.ascontiguousarray(img))
 
     def redraw(self) -> None:
@@ -431,9 +446,10 @@ class VJ(OpenGLFrame):
                 self.upload(unit, draw_object(objs[i]))
             a = min(1, f * 4, (1 - f) * 4)
             fades.append(a * a * (3 - 2 * a))
-        if s.text_t != self.text_shown:
-            self.text_shown = s.text_t
-            self.upload(2, draw_text((self.rw, self.rh), *s.text_t))
+        text = (s.text_t, s.labels if s.labels_on else ())
+        if text != self.text_shown:
+            self.text_shown = text
+            self.upload(2, draw_text((self.rw, self.rh), *text[0], labels=text[1]))
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.fbo)
         GL.glViewport(0, 0, self.rw, self.rh)
         U = self.U
@@ -541,6 +557,7 @@ def main() -> None:
     root.bind("<Motion>", lambda e: show.hint())
     root.bind("<space>", lambda e: show.send("s"))
     root.bind("<p>", lambda e: show.pause())
+    root.bind("<s>", lambda e: setattr(show, "labels_on", not show.labels_on))
     for n in range(1, 7):
         root.bind(str(n), lambda e, n=n: show.mute(n))
     if "--demo" in args:

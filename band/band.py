@@ -44,6 +44,9 @@ def main() -> None:
         groove = subprocess.Popen([groove_python, os.path.join(ROOT, "groove_server.py")], stdin=subprocess.DEVNULL)
     else:
         print(f"[鼓手] 找不到 {GROOVE_PYTHON}，鼓只用鼓機的 pattern", flush=True)
+    ready = {}  # 鼓手（載入所有鼓組約 9 秒）在背景準備，和載入模型同時進行
+    loader = threading.Thread(target=lambda: ready.update(drummer=Drummer(int(time.time()))))
+    loader.start()
     mrt = tm.MagentaRT2Jax(size="mrt2_small", temperature=TEMPERATURE)
     band = BatchedMRT2(mrt, len(AGENTS))
     tokens = style_tokens(mrt)  # 兩種風格和中間的混合都先準備好，切換時不用等
@@ -53,7 +56,8 @@ def main() -> None:
                             for a in AGENTS]) for f in range(FRAMES_PER_CALL)]
     _, state = band.generate(rows, band.new_state(0))
     band.generate(rows, state)
-    drummer = Drummer(int(time.time()))
+    loader.join()
+    drummer = ready["drummer"]
     drummer.prepare(0)  # 第一段先排好，開始時不用等
 
     human = Human(link)
@@ -109,6 +113,7 @@ def main() -> None:
         state, frame, pending = band.new_state(int(time.time()) % 10000 * 10), 0, None
         rng, degree, human_degree = random.Random(), 0, None
         steps = tm.SCALES[mode]
+        sent_names = None  # 上次送給視覺的光柱名稱
         target = {a: 1.0 for a in GAINS}  # 編制：每個樂器 1 = 在場、0 = 退出；active 是淡入淡出中的實際音量
         active = dict(target)
         rec = None  # --record 檔名：各樂器分軌存成多聲道 wav（測試用）
@@ -150,6 +155,10 @@ def main() -> None:
                 tok = tokens[(style, pending, BLENDS[bar_beat - 1])] if blend else tokens[style]
                 root_pc = min(sounding) % 12 if sounding else (root + steps[degree % 7]) % 12
                 drums.append(drummer.frame(frame + k, style, root_pc))
+                beam_names = (f"鼓 · {drummer.kit['name']}", "808" if drums[-1][1] is not None else "貝斯", "你", "Rhodes", "吉他＋鐘")
+                if beam_names != sent_names:  # 光柱名稱（視覺按 S 顯示）：鼓組或風格變了才送
+                    sent_names = beam_names
+                    link.send("l|" + "|".join(beam_names))
                 rows.append(band.frame_row([agent_conditioning(a, frame + k, root, mode, tok,
                                                                (sounding, onsets if k == 0 else set()), degree)
                                             for a in AGENTS]))

@@ -11,13 +11,15 @@ GROOVE_PYTHON = "~/groove_venv/bin/python"  # 鼓手 groove_server.py（GrooVAE�
 DRUM_LAG = 2                # 鼓延後幾幀：MRT2 的樂器比鼓點條件晚約 70 ms 出聲，鼓往後挪才對齊
 
 AGENTS = ["rhodes", "guitar", "bass", "strings", "bell"]  # MRT2 生成的五個樂器；鼓另外由 Drummer 負責
-STYLES = {  # 每種風格：hi-hat 每拍幾個、各 agent 的提示詞；prompt = 接在提示詞後的風格描述、mode = 強制的調式
-    "neo soul": {"hat_div": 2,
+STYLES = {  # 每種風格：hi-hat 每拍幾個、各 agent 的提示詞；prompt = 接在提示詞後的風格描述、mode = 強制的調式；
+            # kits = 可用的鼓組（samples/ 底下的資料夾）；bass808 = 貝斯改由跟著大鼓的 808 取樣打
+    "neo soul": {"hat_div": 2, "kits": ["neo soul", "rnb_2000s_soul_jazz", "band sound"],
                  "prompts": {"rhodes": "solo rhodes electric piano", "guitar": "solo electric guitar",
                              "bass": "solo electric bass", "strings": "cinematic strings", "bell": "digital bell"}},
     "memphis rap": {"hat_div": 4, "prompt": "dark and moody", "mode": "minor",  # 提示詞不寫 rap（會帶出鼓），一律小調
+                    "kits": ["memphis rap", "trap", "modern trap"], "bass808": True,
                     "prompts": {"rhodes": "solo rhodes electric piano", "guitar": "solo electric guitar",
-                                "bass": "deep sub bass",  # 有 samples/memphis rap/808.wav 時貝斯改由 808 取樣打，這個 agent 靜音
+                                "bass": "deep sub bass",  # bass808 時這個 agent 被 808 取代
                                 "strings": "cinematic strings", "bell": "digital bell"}},
 }
 GAINS = {"rhodes": 0.8, "guitar": 0.8, "bass": 1.0, "drums": 0.7, "strings": 0.8, "bell": 0.5}
@@ -37,7 +39,9 @@ CHORDS = {"major": (0, 4, 7), "minor": (0, 3, 7)}  # 判斷觀眾彈的和弦用
 # ===== 鼓的取樣 =====
 SAMPLES = {36: ("kick", 1.0), 38: ("snare", 1.0), 42: ("hihat", 0.7), 46: ("openhat", 0.7),  # GrooVAE 的鼓音高 → (取樣, 音量)
            45: ("rim", 0.8), 48: ("rim", 0.8), 50: ("rim", 0.8), 49: ("openhat", 0.6), 51: ("openhat", 0.5)}
-# 取樣放在 samples/<風格>/<名稱>.wav；資料夾裡另外有 808.wav 的風格，貝斯改由 808 取樣跟著大鼓打（音高 = 和弦根音）
+# 鼓組 = samples/ 底下的一個資料夾：頂層有 kick.wav、snare.wav… 就直接用；否則照子資料夾名稱（Kicks、Snare、Hi hats…）
+# 每次隨機挑一個取樣（規則在 band/drummer.py 的 KIT_ROLES）。808 一樣照資料夾找，自動量基頻、調到和弦根音
+KIT_SEGMENTS = 8            # 同一風格每幾段（2 小節一段）換一次鼓組；換風格時一定換
 
 # ===== 效能與連線 =====
 TEMPERATURE = 1.1           # 取樣隨機度（MRT2 預設 1.3）：吉他更穩，貝斯不變

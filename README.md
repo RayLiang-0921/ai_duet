@@ -35,7 +35,7 @@ Windows                                   WSL2 (Ubuntu)
 | `band/links.py` | 視覺連線（含空白鍵）、觀眾音符、Windows 端 MIDI 橋接與鋼琴聲 |
 | `groove_server.py` | 鼓手的人味：收鼓機的 2 小節 pattern，用 GrooVAE 回傳演奏（獨立程序、自己的環境） |
 | `vj_tk.py` | 視覺（Windows 端，tkinter + OpenGL）；`--demo` 可不接樂團單獨測試 |
-| `samples/<風格>/` | 鼓的 one-shot：kick、snare、hihat、openhat、rim（+ memphis 的 808.wav）。換檔案就換音色 |
+| `samples/<鼓組>/` | 鼓組。`neo soul`、`memphis rap` 是挑好的（固定檔名 kick.wav…）；其他資料夾是整包音色包，鼓手照子資料夾名稱自動找大鼓、小鼓、hi-hat、open hat、rim、808，每次隨機挑一個 |
 | `test_mrt2.py` | 共用工具（時間計算、MIDI 接收、模型載入）；也可單獨跑一個 agent 的串流 |
 | `tools/analyze_rec.py` | 分析錄音：調性、跟拍、有沒有偷打鼓 |
 
@@ -105,6 +105,7 @@ python -m venv venv
    |------|------|
    | 空白鍵 | 下一段切換風格 |
    | `1`–`6` | 切換 Rhodes、吉他、貝斯、鼓、弦樂、鐘的靜音（優先於自動編制；再按一次恢復） |
+   | `S` | 顯示／隱藏光柱底下的名稱（鼓會寫出目前的鼓組，memphis 時貝斯寫 808） |
    | `P` | 暫停／繼續：樂團在背後照常跟著拍子走，只是不出聲，繼續時馬上接上 |
    | `Q` | 結束整個樂團（不用回終端機） |
    | `F` / `Esc` | 全螢幕／離開全螢幕 |
@@ -116,7 +117,7 @@ RTX 3050 Laptop 上五個 agent 約 37 ms/幀（預算 40 ms）、0 次斷音、
 ## 怎麼改
 
 - **設定**都在 `band/settings.py`，每一項都有註解：BPM、`STYLES`（提示詞、風格描述、強制調式、hi-hat 密度）、`GAINS` / `PAN`、`DROP_P` / `REJOIN_P`、`NEXT_CHORD`、`SAMPLES`、`DRUM_LAG`。
-- **鼓的音色**：換 `samples/<風格>/` 裡同名的 wav。放一個 `808.wav` 就會有 808 貝斯（自動量基頻、調到和弦根音）。
+- **鼓組**：每種風格可用哪些鼓組寫在 `band/settings.py` 的 `STYLES[...]["kits"]`。換風格時一定換鼓組，同一風格每 16 小節（`KIT_SEGMENTS`）也會換一次，每次輪到時取樣都重新隨機挑。新增鼓組只要把音色包放進 `samples/`、名字加進 `kits`；子資料夾的命名規則在 `band/drummer.py` 的 `KIT_ROLES`。808 一樣自動找、自動量基頻調到和弦根音。
 - **鼓的規則**：`band/drummer.py` 的 `Drummer.pattern`（大鼓 / 小鼓 / open hat / 過門）。
 - **各樂器怎麼跟和弦**：`band/harmony.py` 的 `agent_conditioning`（音域、起音頻率、人類按鍵時的行為）。
 - **加一個樂器**：`AGENTS` 加名字，`STYLES` 兩種風格各加提示詞，`GAINS` / `PAN` 給值，`agent_conditioning` 給音域；每多一個 agent 每幀約多 1 ms。
