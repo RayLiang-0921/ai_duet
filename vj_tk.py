@@ -163,8 +163,7 @@ void main(){
  col*=mix(.28+.07*sin(uTime*.6),1.,uStarted);   /* 音樂開始前：暗、慢慢呼吸 */
  col=col/(1.+col*.25);
  col=pow(col,vec3(.95));
- vec3 tt=texture2D(uText,vec2(uv.x,1.-uv.y)).rgb;
- float tx=max(tt.r*uTextA,tt.g*.75*uStarted);   /* r = 提示文字、g = 光束底下的樂器名稱 */
+ float tx=texture2D(uText,vec2(uv.x,1.-uv.y)).r*uTextA;
  gl_FragColor=vec4(mix(col,vec3(.96,.92,.85),tx),1.);
 }
 """
@@ -234,12 +233,8 @@ def draw_object(name: str) -> np.ndarray:
     return np.asarray(img)[::-1].copy()  # OpenGL 的貼圖第一列在下面
 
 
-BEAM_LABELS = ((.167, "鼓"), (.333, "貝斯"), (.5, "你"), (.667, "Rhodes"), (.833, "吉他＋鐘"))  # 和 shader 的光束位置一致
-
-
 def draw_text(size: tuple, big: str, small: str = "") -> np.ndarray:
-    """紅色通道 = 中間的提示文字；綠色通道 = 每道光束底下的樂器名稱（音樂開始後一直顯示）。"""
-    img, labels = Image.new("L", size, 0), Image.new("L", size, 0)
+    img = Image.new("L", size, 0)
     d = ImageDraw.Draw(img)
     try:
         f1, f2 = ImageFont.truetype(FONT, size[1] // 14), ImageFont.truetype(FONT, size[1] // 28)
@@ -248,10 +243,7 @@ def draw_text(size: tuple, big: str, small: str = "") -> np.ndarray:
     d.text((size[0] / 2, size[1] * .46), big, fill=255, font=f1, anchor="mm")
     if small:
         d.text((size[0] / 2, size[1] * .56), small, fill=190, font=f2, anchor="mm")
-    dl = ImageDraw.Draw(labels)
-    for x, name in BEAM_LABELS:
-        dl.text((size[0] * x, size[1] * .955), name, fill=255, font=f2, anchor="mm")
-    return np.stack([np.asarray(img), np.asarray(labels), np.zeros(size[::-1], np.uint8)], axis=2)
+    return np.asarray(img)
 
 
 class Show:
@@ -422,9 +414,7 @@ class VJ(OpenGLFrame):
     def upload(self, unit: int, img: np.ndarray) -> None:
         GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.tex[unit])
-        fmt = GL.GL_RGB if img.ndim == 3 else GL.GL_LUMINANCE
-        GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
-        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, fmt, img.shape[1], img.shape[0], 0, fmt,
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_LUMINANCE, img.shape[1], img.shape[0], 0, GL.GL_LUMINANCE,
                         GL.GL_UNSIGNED_BYTE, np.ascontiguousarray(img))
 
     def redraw(self) -> None:
