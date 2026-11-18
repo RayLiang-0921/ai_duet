@@ -4,7 +4,7 @@ vj_tk.py — 樂團的視覺（Windows 端，tkinter 視窗內嵌 OpenGL，用�
 run_band.bat 會把 Windows 的 python 設成用內顯（圖形設定的「省電」），RTX 3050 留給生成音樂。
 畫面是你在網頁版設計的 shader；多了第五道光束（觀眾的 MIDI），音樂開始前沒有光束。
 單獨測試（不用模型）：venv\\Scripts\\python.exe vj_tk.py --demo
-鍵：點一下畫面（或 M）選風格、Enter 輸入風格（只有開始演奏前）、1–6 靜音、S 光柱名稱、P 暫停、Esc 離開全螢幕、F 全螢幕、Q 結束
+鍵：點一下畫面（或 M）選風格、Enter 輸入風格（只有開始演奏前）、1–6 靜音、S 光柱名稱、- / = 亮度、P 暫停、Esc 離開全螢幕、F 全螢幕、Q 結束
 """
 import math
 import queue
@@ -37,6 +37,7 @@ uniform vec4 uLv;
 uniform vec2 uObjOff;
 uniform float uObjAF,uObjBF;
 uniform float uHue,uHueA;   /* 自訂風格：整個畫面轉成另一個色相 */
+uniform float uBright;      /* 整體亮度（- / = 鍵調整） */
 
 float hash(vec2 p){p=fract(p*vec2(123.34,456.21));p+=dot(p,p+45.32);return fract(p.x*p.y);}
 float noise(vec2 p){vec2 i=floor(p),f=fract(p);vec2 u=f*f*(3.-2.*f);
@@ -100,21 +101,21 @@ vec3 neo(vec2 uv,vec2 p){
  float v=mix(A,B*.75+A*.35,m);
  float o=obj(uObjA,p,t,uObjAF);
  v=v*(1.-.35*o)+o*.5;
- vec3 col=pal(v*1.1+.14*uKeys+.05*uKick-.03,c0,c1,c2,c3);
+ vec3 col=pal(v*1.35-.45+.12*uKeys+.04*uKick,c0,c1,c2,c3);   /* 大部分落在暗色，只有亮紋接近白 */
  col*=mix(vec3(1.,.95,.8),vec3(1.06,.8,.82),uTone);
- col*=.78+.4*uKeys;
- col+=c3*pow(max(0.,A-.52),2.)*2.2;
- col+=mix(c2,c3,.5)*o*.24;
- col+=c2*exp(-d*d*2.2)*(.2+.3*uKick);
+ col*=.6+.3*uKeys;
+ col+=c3*pow(max(0.,A-.52),2.)*1.;
+ col+=mix(c2,c3,.5)*o*.18;
+ col+=c2*exp(-d*d*2.2)*(.08+.12*uKick);
  float ry=(uMelPos-.5)*.8+.07*sin(p.x*3.+uTime*.8)+.05*(fbm(p*3.+t)-.5);
  col+=c3*exp(-pow((p.y-ry)*16.,2.))*uMel*.55;
  vec2 wq=p*2.6+vec2(uFlow*.05,uFlow*.12);
  wq+=.7*vec2(fbm(wq+t*2.),fbm(wq-t*2.+2.3));
  float wc=sin(wq.x*3.1+uTime*.5)+sin(wq.y*3.7-uTime*.4)+sin((wq.x+wq.y)*2.4+uTime*.3);
  float caus=pow(.5+.5*sin(wc*1.7),7.);
- col+=c3*caus*(.1+.45*uMel+.25*uHat)*(.5+.8*A);
- col*=1.-.5*smoothstep(.45,1.35,d0);
- col+=(c3*ibeams(uv,uTime)+vec3(.85,.95,1.)*hbeam(uv,uTime)*1.2)*1.35*uStarted;
+ col+=c3*caus*(.05+.22*uMel+.1*uHat)*(.5+.8*A);
+ col*=1.-.7*smoothstep(.3,1.2,d0);
+ col+=(c3*ibeams(uv,uTime)+vec3(.85,.95,1.)*hbeam(uv,uTime)*1.2)*.7*uStarted;
  return col;
 }
 
@@ -169,7 +170,7 @@ void main(){
  if(uMix>.001)b=trap(uv,p);
  vec3 col=mix(a,b,uMix);
  col=mix(col,hue(col,uHue),uHueA);
- col*=mix(.28+.07*sin(uTime*.6),1.,uStarted);   /* 音樂開始前：暗、慢慢呼吸 */
+ col*=mix(.28+.07*sin(uTime*.6),1.,uStarted)*uBright;   /* 音樂開始前：暗、慢慢呼吸 */
  col=col/(1.+col*.25);
  col=pow(col,vec3(.95));
  vec4 tt=texture2D(uText,vec2(uv.x,1.-uv.y));   /* r = 提示文字、g = 光柱名稱 */
@@ -180,7 +181,7 @@ void main(){
 
 UNIFORMS = ["uRes", "uTime", "uBeat", "uFlow", "uMix", "uKickAge", "uStarted", "uTextA", "uKick", "uSnare", "uHat",
             "uBass", "uKeys", "uTone", "uMel", "uMelPos", "uHum", "uObjA", "uObjB", "uText", "uW", "uLv", "uObjOff",
-            "uObjAF", "uObjBF", "uHue", "uHueA"]
+            "uObjAF", "uObjBF", "uHue", "uHueA", "uBright"]
 NEO_OBJECTS, TRAP_OBJECTS = ["candle", "glass", "leaf", "lava"], ["cassette", "pyramid", "sub"]
 EXTRA_OBJECTS = ["moon", "star", "spiral", "eye"]  # 只給自訂風格隨機挑
 PRESET_STYLES = ["neo soul", "memphis rap"]  # 其他名稱都是自訂風格，依名稱決定隨機的顏色和圖案
@@ -295,6 +296,7 @@ class Show:
         self.conn = None  # 連到樂團的 socket，按鍵時送指令回去
         self.labels, self.labels_on = ("鼓", "貝斯", "你", "Rhodes", "吉他＋鐘"), False  # 光柱名稱（樂團會更新），S 鍵顯示/隱藏
         self.instruments = ["Rhodes", "電吉他", "電貝斯", "鼓", "弦樂", "鐘"]  # 1–6 靜音鍵對應的樂器名稱（樂團會更新）
+        self.bright = 1.0  # 整體亮度：- / = 鍵每次調 10%
         self.muted, self.paused, self.typing = set(), False, None  # muted：靜音中的鍵號；typing：正在打的風格（None = 沒在打字）
         self.style, self.style_list = "neo soul", list(PRESET_STYLES)  # 目前的風格、選單裡的風格（樂團會送來）
         self.hue = self.hue_next = self.hue_a = 0.0  # 自訂風格的色相（弧度）與強度
@@ -311,7 +313,7 @@ class Show:
     def hint(self) -> None:
         """游標移動時提醒按鍵（開始前的等待畫面本來就寫著）。"""
         if self.started:
-            self.show_text(self.style, "點一下畫面（或 M）：選風格   1–6：樂器靜音   S：光柱名稱   P：暫停   Q：結束", 3)
+            self.show_text(self.style, "點一下畫面（或 M）：選風格   1–6：樂器靜音   S：光柱名稱   - / =：亮度   P：暫停   Q：結束", 3)
 
     def send(self, command: str) -> None:
         """把指令送回樂團：g <風格> 切換風格、m1–m6 樂器靜音、p 暫停/繼續、q 結束、t <文字> 新風格。"""
@@ -525,7 +527,7 @@ class VJ(OpenGLFrame):
                      ("uStarted", s.started_f), ("uTextA", s.text_a), ("uKick", s.kick), ("uSnare", s.snare),
                      ("uHat", s.hat), ("uBass", s.bass), ("uKeys", s.pad), ("uTone", s.tone), ("uMel", s.mel),
                      ("uMelPos", s.mel_pos), ("uHum", s.hum), ("uObjAF", fades[0]), ("uObjBF", fades[1]),
-                     ("uHue", s.hue), ("uHueA", s.hue_a)):
+                     ("uHue", s.hue), ("uHueA", s.hue_a), ("uBright", s.bright)):
             GL.glUniform1f(U[n], v)
         vv = s.beats / (128 if s.scene else 64)  # 三種配色變化，每 64/128 拍輪替
         vi, vf = int(vv) % 3, vv % 1
@@ -648,6 +650,9 @@ def main() -> None:
             show.pause()
         elif key == "s":
             show.labels_on = not show.labels_on
+        elif e.char in ("-", "=", "+"):  # 調亮度（現場太亮、太暗時）
+            show.bright = round(min(1.5, max(0.2, show.bright + (0.1 if e.char != "-" else -0.1))), 1)
+            show.show_text(f"亮度 {show.bright * 100:.0f}%", "- 變暗、= 變亮", 2)
         elif e.char in ("1", "2", "3", "4", "5", "6"):
             show.mute(int(e.char))
 
