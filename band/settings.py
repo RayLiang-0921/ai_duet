@@ -21,21 +21,24 @@ STYLES = {  # 每種風格：prompt = 接在樂器提示詞後的風格描述（
                     "lean": -0.04},  # 中性的描述（bossa nova、民謠）本來就稍微比較像 memphis rap，要明顯比較像才選它
 }
 INSTRUMENTS = {  # 位置 → 風格 → [(顯示名稱, 提示詞, 音量)]；第一個是開場用的。某個位置被自動編制安排休息時，會換成池裡的另一個
-    # 音量 = tools/audition.py 量到的有聲時第 90 百分位，混音時拉到同一個大小。只收試音時沒走音、沒偷帶鼓聲或低頻的樂器：
-    # 例如 memphis 的 "dark and moody" 會讓長笛、豎琴、鋼琴冒出 100 Hz 以下的低頻（像在彈貝斯），digital bell 會帶 hi-hat
-    "keys": {"neo soul": [("Rhodes", "solo rhodes electric piano", .093), ("Wurlitzer", "wurlitzer electric piano", .154),
-                          ("管風琴", "hammond organ", .153)],
-             "memphis rap": [("Rhodes", "solo rhodes electric piano", .088), ("Wurlitzer", "wurlitzer electric piano", .106),
-                             ("管風琴", "hammond organ", .169)]},
-    "rhythm": {"neo soul": [("電吉他", "solo electric guitar", .073), ("尼龍吉他", "nylon string guitar", .102), ("豎琴", "harp", .070)],
-               "memphis rap": [("電吉他", "solo electric guitar", .127), ("悶音吉他", "muted funk guitar", .097)]},
-    "bass": {"neo soul": [("電貝斯", "solo electric bass", .118), ("無琴格貝斯", "fretless bass", .074), ("低音提琴", "upright bass", .087)],
-             "memphis rap": [("貝斯", "deep sub bass", .206)]},  # memphis 由 808 取代
-    "pad": {"neo soul": [("弦樂", "cinematic strings", .123), ("合唱", "choir", .120), ("大提琴", "cello", .083)],
-            "memphis rap": [("弦樂", "cinematic strings", .094), ("合唱", "choir", .105), ("暗色弦樂", "dark strings", .121)]},
-    "lead": {"neo soul": [("鐘", "digital bell", .106), ("音樂盒", "music box", .154), ("鐵琴", "vibraphone", .088), ("長笛", "flute", .073)],
-             "memphis rap": [("音樂盒", "music box", .106), ("鐵琴", "vibraphone", .133)]},
+    # 音量 = 實測有聲時的第 90 百分位（提示詞加 instrumental、「不要鼓」強度 8 之後重量），混音時拉到同一個大小。
+    # 只收試音時沒走音、沒偷帶鼓聲、人聲或低頻的樂器（tools/audition.py 的鼓聲、人聲欄）：
+    # choir 人聲 0.95、cinematic strings 和 upright bass 常帶鼓、harp 常像人聲；memphis 的 "dark and moody" 會讓長笛冒出低頻
+    "keys": {"neo soul": [("Rhodes", "solo rhodes electric piano", .106), ("Wurlitzer", "wurlitzer electric piano", .144),
+                          ("管風琴", "hammond organ", .145)],
+             "memphis rap": [("Rhodes", "solo rhodes electric piano", .132), ("Wurlitzer", "wurlitzer electric piano", .138),
+                             ("管風琴", "hammond organ", .208)]},
+    "rhythm": {"neo soul": [("電吉他", "solo electric guitar", .107), ("尼龍吉他", "nylon string guitar", .197)],
+               "memphis rap": [("電吉他", "solo electric guitar", .187), ("悶音吉他", "muted funk guitar", .130)]},
+    "bass": {"neo soul": [("電貝斯", "solo electric bass", .143), ("無琴格貝斯", "fretless bass", .131)],
+             "memphis rap": [("貝斯", "deep sub bass", .129)]},  # memphis 由 808 取代
+    "pad": {"neo soul": [("大提琴", "cello", .124), ("弦樂", "legato string ensemble", .096), ("風琴鋪底", "soft electric organ pad", .161)],
+            "memphis rap": [("弦樂", "legato string ensemble", .108), ("暗色弦樂", "dark strings", .060), ("小提琴", "slow violins", .052),
+                            ("風琴鋪底", "soft electric organ pad", .074)]},
+    "lead": {"neo soul": [("鐘", "digital bell", .079), ("音樂盒", "music box", .129), ("鐵琴", "vibraphone", .152), ("長笛", "flute", .084)],
+             "memphis rap": [("音樂盒", "music box", .062), ("鐵琴", "vibraphone", .155)]},
 }
+LEAK_LIMIT = 0.35           # 監聽（band/guard.py）聽到某個樂器像鼓聲或人聲的機率超過這個，就關掉它、下一段換別的樂器
 LEVEL = 0.1                 # 每個樂器先拉到這個音量，再乘 GAINS
 GAINS = {"keys": 0.8, "rhythm": 0.8, "bass": 1.0, "drums": 0.7, "pad": 0.8, "lead": 0.7}  # 順序 = 視覺 1–6 靜音鍵的順序
 PAN = {"keys": -0.4, "rhythm": 0.4, "bass": 0.0, "drums": 0.0, "pad": 0.0, "lead": 0.2}  # −1 = 最左、+1 = 最右
@@ -43,6 +46,8 @@ MASTER = 0.85               # 整體音量；配合限制器，混音的失真�
 DRUM_WORDS = ("hip hop", "hip-hop", "hiphop", "boom bap", "drum and bass", "drum n bass", "rap", "trap", "drill", "drum",
               "drums", "drumming", "beat", "beats", "percussion", "percussive", "cinematic", "epic", "breakbeat", "dnb",
               "edm", "house", "techno", "dubstep", "reggaeton", "808", "kick", "snare", "hi-hat", "hihat")  # 打字的風格裡會帶出鼓聲的字，自動拿掉
+VOICE_WORDS = ("song", "songs", "vocal", "vocals", "vocalist", "voice", "voices", "sing", "singing", "singer", "sung", "choir",
+               "choral", "chorus", "a cappella", "acapella", "humming", "lyrics", "rapper", "opera", "karaoke", "gospel")  # 會帶出人聲的字，也拿掉
 
 # ===== 曲式 =====
 PHRASE_BARS = 4             # 風格與編制在每段（4 小節）的開頭變，不在半途變

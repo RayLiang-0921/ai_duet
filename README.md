@@ -4,6 +4,7 @@
 畫面由視覺程式即時反應各樂器的音量、拍子和觀眾彈的音。
 
 - **五個 MRT2 位置**：和弦、節奏、貝斯、鋪底、主旋律，用 Google 的 **Magenta RealTime 2** 在 RTX 3050 上即時生成音訊。每個位置有一個樂器池（例如和弦：Rhodes、Wurlitzer、管風琴），位置休息時會換成池裡的另一種樂器。
+- **只有鼓手打鼓、沒有人聲**：MRT2 的提示詞都加 instrumental、「不要鼓」的強度調到 8；另外有**監聽**（`band/guard.py`），演奏中輪流聽每個 MRT2 樂器，聽起來像鼓聲或人聲就馬上關掉，下一段換別的樂器。
 - **一個鼓手**：鼓機照規則排 pattern → **GrooVAE**（Magenta 的真人鼓手模型）補 hi-hat、力度、微小的提前延後 → FL Studio 的 one-shot 取樣發聲；memphis 另有跟著大鼓的 808 貝斯。
 - **風格**：neo soul、memphis rap（一律小調、較暗），也可以在開始演奏前於視覺視窗**打字新增**（例如 rainy night lo-fi），會自動用描述上比較像的那種風格的鼓組。切換前一小節提示詞逐拍混合過去；每段（4 小節）樂器會隨機退出或加入，鼓每段結尾有過門。
 
@@ -31,6 +32,7 @@ Windows                                   WSL2 (Ubuntu)
 | `band/harmony.py` | 判斷觀眾的和弦；每個位置每一幀要彈什麼（MRT2 的 conditioning） |
 | `band/mrt2.py` | 把五個位置合成一批在 GPU 上生成；文字轉風格 token（存在硬碟快取）與混合 |
 | `band/drummer.py` | 鼓機規則、送 GrooVAE、取樣發聲、808 |
+| `band/guard.py` | 監聽：另一個低優先權行程用 MusicCoCa 聽 MRT2 樂器有沒有鼓聲或人聲（門檻 `LEAK_LIMIT`） |
 | `band/mixer.py` | 平移、限制器、算給視覺的音量 |
 | `band/links.py` | 視覺連線（含選單、按鍵送回的指令）、觀眾音符、Windows 端 MIDI 橋接與鋼琴聲 |
 | `groove_server.py` | 鼓手的人味：收鼓機的 2 小節 pattern，用 GrooVAE 回傳演奏（獨立程序、自己的環境） |
@@ -39,7 +41,7 @@ Windows                                   WSL2 (Ubuntu)
 | `samples/<鼓組>/` | 鼓組。`neo soul`、`memphis rap` 是挑好的（固定檔名 kick.wav…）；其他資料夾是整包音色包，鼓手照子資料夾名稱自動找大鼓、小鼓、hi-hat、open hat、rim、808，每次隨機挑一個 |
 | `test_mrt2.py` | 共用工具（時間計算、MIDI 接收、模型載入）；也可單獨跑一個 agent 的串流 |
 | `tools/analyze_rec.py` | 分析錄音：調性、跟拍、有沒有偷打鼓 |
-| `tools/audition.py` | 試音：候選樂器在兩種風格各生成 20 秒，量走音、跟拍、偷帶鼓聲或低頻、音量；也量文字轉風格的時間 |
+| `tools/audition.py` | 試音：候選樂器在兩種風格各生成 20 秒，量走音、跟拍、偷帶鼓聲或人聲、低頻、音量；也量文字轉風格的時間 |
 
 ## 環境安裝
 
@@ -106,7 +108,7 @@ python -m venv venv
    | 按鍵 | 作用 |
    |------|------|
    | 點一下畫面 / `M` | 風格選單（● 是現在的風格；選回現在的風格 = 取消待切換） |
-   | `Enter` | 只有開始演奏前：輸入一個風格描述，再按 Enter 送出、Esc 取消。英文效果最好；會帶出鼓聲的字（rap、trap、drums、cinematic…）會自動拿掉。約 7 秒準備好，當作起始風格；鼓組、調式和樂器用描述上比較像的 neo soul 或 memphis rap（trap、drill、恐怖類 → memphis；爵士、bossa、民謠 → neo soul），並記進 `custom_styles.txt`，下次開機選單就有。開始演奏後只能從選單選現有的風格 |
+   | `Enter` | 只有開始演奏前：輸入一個風格描述，再按 Enter 送出、Esc 取消。英文效果最好；會帶出鼓聲或人聲的字（rap、trap、drums、cinematic、song、vocal、choir…）會自動拿掉。約 7 秒準備好，當作起始風格；鼓組、調式和樂器用描述上比較像的 neo soul 或 memphis rap（trap、drill、恐怖類 → memphis；爵士、bossa、民謠 → neo soul），並記進 `custom_styles.txt`，下次開機選單就有。開始演奏後只能從選單選現有的風格 |
    | `1`–`6` | 切換 Rhodes、吉他、貝斯、鼓、弦樂、鐘的靜音（優先於自動編制；再按一次恢復） |
    | `S` | 顯示／隱藏光柱底下的名稱（鼓會寫出目前的鼓組，memphis 時貝斯寫 808） |
    | `P` | 暫停／繼續：樂團在背後照常跟著拍子走，只是不出聲，繼續時馬上接上 |
@@ -123,7 +125,7 @@ RTX 3050 Laptop 上五個 agent 約 37 ms/幀（預算 40 ms）、0 次斷音、
 - **鼓組**：每種風格可用哪些鼓組寫在 `band/settings.py` 的 `STYLES[...]["kits"]`。換風格時一定換鼓組，同一風格每 16 小節（`KIT_SEGMENTS`）也會換一次，每次輪到時取樣都重新隨機挑。新增鼓組只要把音色包放進 `samples/`、名字加進 `kits`；子資料夾的命名規則在 `band/drummer.py` 的 `KIT_ROLES`。808 一樣自動找、自動量基頻調到和弦根音。
 - **鼓的規則**：`band/drummer.py` 的 `Drummer.pattern`（大鼓 / 小鼓 / open hat / 過門）。
 - **各位置怎麼跟和弦**：`band/harmony.py` 的 `agent_conditioning`（音域、起音頻率、人類按鍵時的行為）。
-- **加一種樂器**：先把提示詞放進 `tools/audition.py` 的 `CANDIDATES` 試音；兩種風格都沒走音、沒偷帶鼓聲（hat 鎖 > 0.4 且 hf% 高）、非貝斯位置的低頻（lf%）不高的，再加進 `INSTRUMENTS`，第三個數字填試音量到的音量。
+- **加一種樂器**：先把提示詞放進 `tools/audition.py` 的 `CANDIDATES` 試音；兩種風格都沒走音、鼓聲和人聲欄都在 0.3 以下、非貝斯位置的低頻（lf%）不高的，再加進 `INSTRUMENTS`，第三個數字填試音量到的音量。
 - **加一個位置**：GPU 已經用到每幀約 36 ms／40 ms，再加會斷音；要更多種聲音請用樂器池。
 
 ## 測試

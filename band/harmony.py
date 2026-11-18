@@ -38,7 +38,7 @@ def agent_conditioning(agent: str, frame: int, root: int, mode: str, tokens: dic
     other = lambda p: -1 if p % 12 in scale else 0  # 調內音交給模型，調外音靜音
 
     cond = {"mulan_tokens_25hz": tokens[agent], "drum_pianoroll_tokens": [0]}  # 鼓點 0：這些 agent 不打鼓
-    cfg = {"notes": 2.0, "drums": 5.0}
+    cfg = {"notes": 2.0, "drums": 8.0}  # 「不要鼓」的強度：5 時偶爾還會冒出鼓聲，8 實測沒有（tools/audition.py 的鼓聲欄）
     if agent == "bass":
         bass_pc = min(sounding) % 12 if sounding else (root + steps[degree % 7]) % 12
         eighth = tm.count(frame, BPM * 2)

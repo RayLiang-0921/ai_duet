@@ -3,7 +3,8 @@
   1. 文字 → 風格 token 要多久；演奏中做這件事會不會拖慢 GPU 生成（每幀 ms）
   2. 每個位置一次試 5 個候選（同一批在 GPU 上），兩種風格各 SECONDS 秒，量：
      調內比例（chroma 能量在音階上的比例，隨機約 0.58）、鎖拍（起音鎖在八分音符格上，0–1）、
-     鼓味（6 kHz 以上的起音鎖在 16 分音符格上 > 0.4 可疑、100 Hz 以下的能量比例 = 悶響）、音量（有聲時的第 90 百分位）
+     鼓味（6 kHz 以上的起音鎖在 16 分音符格上 > 0.4 可疑、100 Hz 以下的能量比例 = 悶響）、音量（有聲時的第 90 百分位）、
+     鼓聲 / 人聲（MusicCoCa 聽生成的聲音，判斷像「鼓」「人聲」的機率；> 0.3 就不要用）
 用法（WSL GPU 環境，和 run_band.sh 一樣的環境變數）：python tools/audition.py [輸出資料夾]
 """
 import os
@@ -28,10 +29,22 @@ CANDIDATES = {  # 位置 → 5 個候選提示詞；量完把可以用的加進 
     "keys": ["solo rhodes electric piano", "wurlitzer electric piano", "hammond organ", "acoustic grand piano", "clavinet"],
     "rhythm": ["solo electric guitar", "nylon string guitar", "muted funk guitar", "harp", "marimba"],
     "bass": ["solo electric bass", "upright bass", "synth bass", "fretless bass", "deep sub bass"],
-    "pad": ["cinematic strings", "dark strings", "choir", "warm synth pad", "cello"],
+    "pad": ["cinematic strings", "dark strings", "legato string ensemble", "warm synth pad", "cello"],  # choir：人聲 0.95，不用
     "lead": ["digital bell", "vibraphone", "flute", "music box", "synth lead"],
 }
 SCALE = {"major": [0, 2, 4, 5, 7, 9, 11], "minor": [0, 2, 3, 5, 7, 8, 10]}
+LABELS = ["drums and percussion", "drum kit", "hi-hat and snare", "singing voice", "choir vocals", "human voice humming",  # 前 3 個 = 鼓、再 3 個 = 人聲
+          "piano", "electric piano", "electric guitar", "acoustic guitar", "harp", "bass guitar", "strings", "cello",
+          "bells", "music box", "vibraphone", "flute", "synthesizer pad", "organ"]
+
+
+def leak(mrt, x: np.ndarray, labels: np.ndarray) -> tuple:
+    """(鼓聲機率, 人聲機率)：MusicCoCa 的聲音 embedding 和 LABELS 文字 embedding 比相似度（零樣本分類）。"""
+    from magenta_rt import audio as au
+    e = np.asarray(mrt._style_model.embed(au.Waveform(x.astype(np.float32), 48000)), np.float32).ravel()
+    p = np.exp(30 * labels @ (e / np.linalg.norm(e)))
+    p /= p.sum()
+    return float(p[:3].sum()), float(p[3:6].sum())
 
 
 def lock(x: np.ndarray, sr: int, period: float, lo: float = 0, hi: float = 0) -> float:
@@ -113,6 +126,8 @@ def main() -> None:
           f"同時不停轉風格（轉了 {len(done)} 句）中位數 {np.median(loaded):.1f} / 最慢 {max(loaded):.1f} ms", flush=True)
 
     # ---- 2. 候選樂器 ----
+    labels = np.stack([np.asarray(mrt.embed_style(t), np.float32).ravel() for t in LABELS])
+    labels /= np.linalg.norm(labels, axis=1, keepdims=True)
     rng = random.Random(3)
     n = int(SECONDS * 25) // FRAMES_PER_CALL * FRAMES_PER_CALL
     results = {}
@@ -123,7 +138,7 @@ def main() -> None:
             degrees.append(d)
             d = rng.choice(NEXT_CHORD[mode].get(d, [0]))
         for slot, cands in CANDIDATES.items():
-            toks = [{slot: list(mrt.tokenize_style(mrt.embed_style(f"{c}, {suffix}")))} for c in cands]
+            toks = [{slot: list(mrt.tokenize_style(mrt.embed_style(f"{c}, {suffix}, instrumental")))} for c in cands]  # 和 band.py 的 prompt() 一樣
             state, audio = band.new_state(7), []
             for f0 in range(0, n, FRAMES_PER_CALL):
                 rows = [band.frame_row([agent_conditioning(slot, f, 0, mode, tk, (set(), set()), degrees[f // 80]) for tk in toks])
@@ -135,12 +150,13 @@ def main() -> None:
                 y = audio[:, i].reshape(-1, 2)
                 sf.write(f"{out_dir}/{style.split()[0]}_{slot}_{c.replace(' ', '_')}.wav", y, 48000)
                 results[(style, slot, c)] = metrics(y.mean(1), 48000, mode)
+                results[(style, slot, c)]["drum"], results[(style, slot, c)]["voice"] = leak(mrt, y[50 * 1920:], labels)
             print(f"{style} / {slot} 完成", flush=True)
 
-    print("\n位置     候選                         風格      調內  鎖拍  hat鎖  hf%   lf%   音量   有聲%")
+    print("\n位置     候選                         風格      調內  鎖拍  hat鎖  hf%   lf%   音量   有聲%  鼓聲  人聲")
     for (style, slot, c), m in results.items():
         print(f"{slot:8s} {c:28s} {style.split()[0]:8s} {m['key']:.2f}  {m['beat']:.2f}  {m['hat']:.2f}  "
-              f"{m['hf%']:4.1f}  {m['lf%']:4.1f}  {m['loud']:.3f}  {m['sound%']:3.0f}")
+              f"{m['hf%']:4.1f}  {m['lf%']:4.1f}  {m['loud']:.3f}  {m['sound%']:3.0f}  {m['drum']:.2f}  {m['voice']:.2f}")
 
 
 if __name__ == "__main__":

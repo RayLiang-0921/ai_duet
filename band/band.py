@@ -1,4 +1,5 @@
 """主流程：載入模型 → 等觀眾彈和弦 → 生成執行緒（和弦進行、風格、編制、樂器、鼓）＋ 播放執行緒 → 結束統計。"""
+import collections
 import os
 import queue
 import random
@@ -14,13 +15,14 @@ import soundfile as sf
 
 import test_mrt2 as tm
 from band.drummer import Drummer
+from band.guard import Guard
 from band.harmony import agent_conditioning, detect_chord
 from band.links import Human, VisualLink, start_windows
 from band.mixer import levels, limit, pan_gains
 from band.mrt2 import BatchedMRT2, StyleBank
 from band.settings import (AGENTS, BLENDS, BPM, CHORD_SETTLE, DROP_P, DRUM_WORDS, FRAMES_PER_CALL, GAINS, GROOVE_PYTHON,
-                           INSTRUMENTS, LEVEL, MASTER, NEXT_CHORD, PAN, PHRASE_BARS, QUEUE_FRAMES, REJOIN_P, ROOT, STYLES,
-                           TEMPERATURE, VISUAL_TCP)
+                           INSTRUMENTS, LEAK_LIMIT, LEVEL, MASTER, NEXT_CHORD, PAN, PHRASE_BARS, QUEUE_FRAMES, REJOIN_P, ROOT, STYLES,
+                           TEMPERATURE, VISUAL_TCP, VOICE_WORDS)
 
 CUSTOM_STYLES = os.path.join(ROOT, "custom_styles.txt")  # 自訂風格清單：一行一個「風格描述 | 根據的風格」
 
@@ -31,14 +33,14 @@ def pool(slot: str, style: str) -> list:
 
 
 def prompt(slot: str, style: str, inst: tuple) -> str:
-    """送給 MRT2 的提示詞 = 樂器 + 風格描述。"""
-    return f"{inst[1]}, {STYLES[style].get('prompt', style)}"
+    """送給 MRT2 的提示詞 = 樂器 + 風格描述 + instrumental（實測讓人聲少很多；沒有 instrumental 時爵士風格的吉他、弦樂常像有人在唱）。"""
+    return f"{inst[1]}, {STYLES[style].get('prompt', style)}, instrumental"
 
 
 def clean_style(text: str) -> tuple:
-    """觀眾打的風格 → (拿掉會帶出鼓聲的字之後的文字, 拿掉的字)。"""
+    """觀眾打的風格 → (拿掉會帶出鼓聲或人聲的字之後的文字, 拿掉的字)。"""
     removed = []
-    for w in sorted(DRUM_WORDS, key=len, reverse=True):
+    for w in sorted(DRUM_WORDS + VOICE_WORDS, key=len, reverse=True):
         pattern = rf"(?<![\w-]){re.escape(w)}(?![\w-])"
         if re.search(pattern, text, flags=re.I):
             removed.append(w)
@@ -95,6 +97,7 @@ def main() -> None:
                                   stdin=subprocess.DEVNULL, stderr=open(log, "w"))
     else:
         print(f"[鼓手] 找不到 {GROOVE_PYTHON}，鼓只用鼓機的 pattern", flush=True)
+    guard = Guard(ROOT)  # 監聽樂器有沒有冒出鼓聲或人聲（另一個行程，在背景載入）
     ready = {}  # 鼓手（載入所有鼓組約 9 秒）在背景準備，和載入模型同時進行
     loader = threading.Thread(target=lambda: ready.update(drummer=Drummer(int(time.time()))))
     loader.start()
@@ -150,11 +153,11 @@ def main() -> None:
         return name
 
     def add_style(text: str) -> None:
-        """（背景執行緒）開始演奏前觀眾打的風格：拿掉會帶出鼓聲的字、判斷用哪種風格的鼓、準備好、
+        """（背景執行緒）開始演奏前觀眾打的風格：拿掉會帶出鼓聲或人聲的字、判斷用哪種風格的鼓、準備好、
         記進 custom_styles.txt（下次開機還在），當作起始風格。"""
         cleaned, removed = clean_style(text)
         if removed:
-            print(f"✂ 拿掉會帶出鼓聲的字：{'、'.join(removed)}", flush=True)
+            print(f"✂ 拿掉會帶出鼓聲或人聲的字：{'、'.join(removed)}", flush=True)
         if not cleaned:
             link.send(f"t|沒有可以用的風格描述|{'（拿掉了：' + '、'.join(removed) + '）' if removed else ''}|4")
             return
@@ -239,6 +242,10 @@ def main() -> None:
         next_lineup, swap = {}, {}  # 切換風格後的樂器；休息中、下一段要換的樂器
         last_tok = {a: bank.get(prompt(a, style, lineup[a])) for a in AGENTS}
         sent_names = None  # 上次送給視覺的樂器名稱
+        banned, leaking, fix = set(), set(), {}  # 監聽聽到鼓聲或人聲的 (風格, 樂器) 這場不再用；正在關掉的位置；下一段要換上的樂器
+        heard = {a: collections.deque(maxlen=250) for a in AGENTS}  # 每個位置現在的樂器最近 10 秒的聲音（單聲道）
+        heard_key, asked, turn = {}, {}, 0  # heard 是哪個 (風格, 樂器) 的；送去監聽的編號 → (位置, (風格, 樂器))；輪到誰
+        usable = lambda a, st: [i for i in pool(a, st) if (st, i[0]) not in banned] or pool(a, st)
         target = {a: 1.0 for a in GAINS}  # 編制：每個樂器 1 = 在場、0 = 退出；active 是淡入淡出中的實際音量
         active = dict(target)
         rec = None  # --record 檔名：各樂器分軌存成多聲道 wav（測試用）
@@ -247,10 +254,39 @@ def main() -> None:
 
         def plan_switch(new: str) -> dict:
             """要切到 new：每個位置留著現在的樂器（新風格也有的話），否則用新風格的第一個；在背景先把逐拍混合的 token 算好。"""
-            nxt = {a: next((i for i in pool(a, new) if i[0] == lineup[a][0]), pool(a, new)[0]) for a in AGENTS}
+            nxt = {a: next((i for i in usable(a, new) if i[0] == lineup[a][0]), usable(a, new)[0]) for a in AGENTS}
             pairs = [(prompt(a, style, lineup[a]), prompt(a, new, nxt[a])) for a in AGENTS]
             threading.Thread(target=lambda: [bank.warm(p, q, w) for w in BLENDS for p, q in pairs], daemon=True).start()
             return nxt
+
+        def listen(audio: np.ndarray, use808: bool, frame: int) -> None:
+            """監聽：記下每個位置的聲音；每 2.4 秒輪流送一個位置最近 10 秒去聽；聽到鼓聲或人聲就關掉它、下一段換別的樂器。"""
+            nonlocal turn
+            for i, a in enumerate(AGENTS):
+                key = (style, lineup[a][0])
+                if heard_key.get(a) != key:  # 換了樂器或風格：重新聽
+                    heard[a].clear()
+                    heard_key[a] = key
+                    leaking.discard(a)
+                heard[a].extend(audio[:, i].mean(-1))
+            while not guard.results.empty():
+                tag, drum, voice = guard.results.get()
+                a, key = asked.pop(tag)
+                if key == heard_key[a] and max(drum, voice) > LEAK_LIMIT and a not in leaking:
+                    banned.add(key)
+                    leaking.add(a)
+                    options = [i for i in pool(a, style) if (style, i[0]) not in banned]
+                    if options and not pending:
+                        fix[a] = rng.choice(options)
+                    print(f"🚫 {a} 的 {key[1]} 聽起來有{'人聲' if voice >= drum else '鼓聲'}（{max(drum, voice):.2f}），先關掉"
+                          f"{'，下一段換 ' + fix[a][0] if a in fix else '；這種風格沒有別的樂器可換，這個位置先休息'}", flush=True)
+            if frame % 60 < FRAMES_PER_CALL:
+                for n in range(len(AGENTS)):
+                    a = AGENTS[(turn + n) % len(AGENTS)]
+                    if (len(heard[a]) == heard[a].maxlen and a not in leaking and a not in muted and active[a] > 0.5
+                            and not (a == "bass" and use808) and guard.check(frame, np.concatenate(heard[a]))):
+                        asked[frame], turn = (a, heard_key[a]), (turn + n + 1) % len(AGENTS)
+                        break
 
         while not stop.is_set():
             # ---- 觀眾的輸入 ----
@@ -276,7 +312,7 @@ def main() -> None:
                 if tm.starts(frame + k, BPM / 4):  # 小節開頭：決定這小節的和弦；段落開頭才換風格、改編制，拍子不中斷
                     bar = tm.count(frame + k, BPM / 4)
                     if pending and bar % PHRASE_BARS == 0:
-                        style, lineup, pending, degree = pending, next_lineup, None, 0
+                        style, lineup, pending, degree, fix = pending, next_lineup, None, 0, {}
                         mode = STYLES[style].get("mode", played_mode)
                         steps = tm.SCALES[mode]
                         link.send(f"c|{style}")
@@ -284,19 +320,19 @@ def main() -> None:
                         degree, human_degree = human_degree, None
                     elif bar > 0:
                         degree = rng.choice(NEXT_CHORD[mode].get(degree, [0]))
-                    if bar % PHRASE_BARS == 0 and swap:  # 休息過的位置換上新樂器
-                        for a, inst in swap.items():
+                    if bar % PHRASE_BARS == 0 and (swap or fix):  # 休息過的位置、被監聽關掉的位置換上新樂器
+                        for a, inst in {**swap, **fix}.items():
                             print(f"🎷 {a}：{lineup[a][0]} → {inst[0]}", flush=True)
                             lineup[a] = inst
-                        swap = {}
+                        swap, fix = {}, {}
                     if bar % PHRASE_BARS == PHRASE_BARS - 1:  # 編制：下一段誰在場，這一小節慢慢淡入淡出過去；至少留 3 個
                         old = target
                         target = {a: float(rng.random() >= (DROP_P if on else 1 - REJOIN_P)) for a, on in target.items()}
                         for a in rng.sample(list(target), 3 - int(sum(target.values()))) if sum(target.values()) < 3 else ():
                             target[a] = 1.0
                         if not pending:  # 這一段要休息的位置，下一段開頭換樂器（休息時換，聽不到切換）
-                            swap = {a: rng.choice([i for i in pool(a, style) if i != lineup[a]]) for a in AGENTS
-                                    if old[a] and not target[a] and len(pool(a, style)) > 1}
+                            swap = {a: rng.choice([i for i in usable(a, style) if i != lineup[a]]) for a in AGENTS
+                                    if old[a] and not target[a] and a not in fix and len(usable(a, style)) > 1}
                         print("🎚 下一段：" + "、".join(a for a, on in target.items() if on), flush=True)
                 scenes.append(STYLES[style]["scene"])
                 bar_beat = tm.count(frame + k, BPM) % 4
@@ -326,9 +362,10 @@ def main() -> None:
             if gen_ms[-1] > 60:  # 一批特別慢（會斷音）：印出來，方便對照當時發生什麼事
                 print(f"⚠ 第 {frame * 0.04:.1f} 秒這一批生成很慢：每幀 {gen_ms[-1]:.0f} ms", flush=True)
             level = {a: min(2.0, max(0.5, LEVEL / lineup[a][2])) for a in AGENTS}  # 每種樂器拉到差不多大聲
+            listen(audio, use808, frame)
             for k in range(FRAMES_PER_CALL):
-                goal = lambda a: 0.0 if a in muted else (1.0 if sounding else target[a])  # 手動靜音優先；人類彈琴時全員回來
-                active = {a: g + (goal(a) - g) * 0.04 for a, g in active.items()}  # 約一小節淡入淡出
+                goal = lambda a: 0.0 if a in muted or a in leaking else (1.0 if sounding else target[a])  # 靜音優先；人類彈琴時全員回來
+                active = {a: g + (goal(a) - g) * (0.25 if a in leaking else 0.04) for a, g in active.items()}  # 約一小節淡入淡出；有鼓聲、人聲的馬上關
                 stems = {a: audio[k, i] * active[a] * level[a] for i, a in enumerate(AGENTS)}
                 stems["drums"] = drums[k][0] * active["drums"]
                 if drums[k][1] is not None:
@@ -404,7 +441,7 @@ def main() -> None:
 
     threading.Thread(target=wait_enter, daemon=True).start()
     stop.wait()
-    for p in (bridge, visual, groove):
+    for p in (bridge, visual, groove, guard.proc):
         if p:
             p.terminate()
     for t in threads:  # 等生成結束再離開，否則 JAX 會當掉
