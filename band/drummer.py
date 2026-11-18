@@ -107,9 +107,10 @@ class Drummer:
                 self.io = None
 
     def frame(self, frame: int, style: str, root_pc: int) -> tuple:
-        """這一幀的 (鼓聲, 808 貝斯或 None)，各 (1920, 2)。段落開頭把這段的演奏排進 pending、並準備下一段；
-        風格決定鼓組和 hi-hat 密度；有 808 的風格，每個大鼓同時打一個 root_pc 音高的 808（單音，新的會切掉舊的）。"""
-        start, hat_div = frame * 1920, STYLES[style]["hat_div"]
+        """這一幀的 (鼓聲, 808 貝斯或 None, 打擊)。鼓聲、808 各 (1920, 2)；打擊 = [大鼓, 小鼓類, hi-hat 類] 這一幀打下去的力度
+        （0–1，給視覺用，比從聲音猜準）。段落開頭把這段的演奏排進 pending、並準備下一段；風格決定鼓組和 hi-hat 密度；
+        有 808 的風格，每個大鼓同時打一個 root_pc 音高的 808（單音，新的會切掉舊的）。"""
+        start, hat_div, hits = frame * 1920, STYLES[style]["hat_div"], [0.0, 0.0, 0.0]
         if tm.starts(frame, BPM / 8):  # 每 2 小節一段
             seg, step = tm.count(frame, BPM / 8), 60 / BPM / 4
             self.prepare(seg + 1)
@@ -121,6 +122,8 @@ class Drummer:
             name, gain = SAMPLES[p]
             y = self.samples[style][name]
             self.buf[pos - start: pos - start + len(y)] += gain * (v / 127) ** 0.5 * y  # 力度曲線：輕的不會太小聲
+            kind = 0 if p == 36 else (2 if name in ("hihat", "openhat") else 1)  # 小鼓類含 tom、rim
+            hits[kind] = max(hits[kind], (v / 127) ** 0.5)
             if p == 36 and style in self.s808:
                 i, y = pos - start, self.s808[style][root_pc]
                 self.buf808[i: i + 240] *= np.linspace(1, 0, 240)[:, None]  # 5 ms 內切掉上一個 808
@@ -134,4 +137,4 @@ class Drummer:
             bass = self.buf808[:1920].copy()
             self.buf808[:-1920] = self.buf808[1920:]
             self.buf808[-1920:] = 0
-        return out, bass
+        return out, bass, hits

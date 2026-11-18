@@ -169,7 +169,7 @@ def main() -> None:
                 mix = MASTER * sum(mix_gains[a] * s for a, s in stems.items())
                 mix = np.ascontiguousarray(limit(mix), dtype=np.float32)
                 beat = (frame + k) * BPM / tm.FRAMES_PER_MIN
-                info = f"f {levels(stems)} {beat:.2f} {frame_styles[k]}"
+                info = f"f {levels(stems, [h * active['drums'] for h in drums[k][2]])} {beat:.2f} {frame_styles[k]}"
                 while not stop.is_set():
                     try:
                         audio_q.put((mix, info), timeout=0.5)

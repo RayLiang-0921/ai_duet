@@ -20,17 +20,16 @@ def limit(x: np.ndarray, threshold: float = 0.8) -> np.ndarray:
                     np.sign(x) * (threshold + (1 - threshold) * np.tanh((a - threshold) / (1 - threshold))))
 
 
-def levels(stems: dict) -> str:
-    """一幀各樂器的聲音 → 給視覺的 8 個數值（大約 0–1）：大鼓、小鼓、hi-hat、貝斯、鍵盤、旋律、鍵盤音色、旋律高低。
-    除數是實際音量的第 90 百分位（鼓是 one-shot 取樣的重擊），所以強的音約為 1。"""
+def levels(stems: dict, hits: list) -> str:
+    """一幀 → 給視覺的 9 個數值（大約 0–1），順序對應 vj_tk.Show.handle：
+    大鼓、小鼓、hi-hat（hits：鼓手這一幀真的打下去的力度，不從聲音猜）、貝斯、Rhodes、旋律（吉他＋鐘）、
+    Rhodes 音色、旋律高低、鍵盤與弦樂合起來（背景亮度）。除數是實際音量的第 90 百分位，所以強的音約為 1。"""
     mono = {a: s.mean(axis=1) for a, s in stems.items()}
     spectrum = lambda a: np.abs(np.fft.rfft(mono[a] * WINDOW)) ** 2
     rms = lambda a: float(np.sqrt((mono[a] ** 2).mean()))
     centroid = lambda P, lo, hi: min(1.0, max(0.0, math.log2(max(lo, (P * FFT_FREQ).sum() / (P.sum() + 1e-9)) / lo)
                                                / math.log2(hi / lo)))
-    D = spectrum("drums")
-    band = lambda lo, hi: float(np.sqrt(D[(FFT_FREQ >= lo) & (FFT_FREQ < hi)].sum())) / 1920
-    v = [band(0, 150) / 0.2, band(150, 2500) / 0.1, band(6000, 24000) / 0.07, rms("bass") / 0.15,
-         (rms("rhodes") + rms("strings")) / 0.25, (rms("guitar") + rms("bell")) / 0.15,  # 弦樂一直在，鍵盤除數放大才不會整個畫面過亮
-         centroid(spectrum("rhodes"), 200, 2000), centroid(spectrum("guitar"), 150, 3000)]
+    v = [*hits, rms("bass") / 0.15, rms("rhodes") / 0.1, (rms("guitar") + rms("bell")) / 0.15,
+         centroid(spectrum("rhodes"), 200, 2000), centroid(spectrum("guitar"), 150, 3000),
+         (rms("rhodes") + rms("strings")) / 0.25]  # 弦樂一直在，除數放大才不會整個畫面過亮
     return " ".join(f"{min(x, 2.0):.2f}" for x in v)

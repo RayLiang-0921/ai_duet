@@ -56,7 +56,7 @@ float beam(vec2 uv,float cx,float lv,float t){
  float h=.08+lv*.85;
  return exp(-x*x)*smoothstep(h,0.,uv.y)*(.45+1.3*lv)*(.55+.8*n);
 }
-/* 五道光束：鼓、貝斯、觀眾（中間）、鍵盤、旋律 */
+/* 五道光束，由左到右：鼓（大鼓、小鼓）、貝斯（memphis 是 808）、觀眾（中間）、Rhodes、旋律（吉他＋鐘） */
 float ibeams(vec2 uv,float t){
  return beam(uv,.167,uLv.x,t)+beam(uv,.333,uLv.y,t)+beam(uv,.667,uLv.z,t)+beam(uv,.833,uLv.w,t);
 }
@@ -253,7 +253,7 @@ class Show:
         self.lines: "queue.Queue[str]" = queue.Queue()
         self.t0 = self.last = time.perf_counter()
         self.scene, self.mix, self.beats, self.flow = 0, 0.0, 0.0, 0.0
-        self.kick = self.snare = self.hat = self.bass = self.keys = self.mel = self.hum = 0.0
+        self.kick = self.snare = self.hat = self.bass = self.keys = self.mel = self.hum = self.pad = 0.0  # pad：鍵盤＋弦樂（背景）
         self.kick_age, self.tone, self.tone_t, self.mel_pos, self.mel_pos_t = 9.0, .2, .2, .5, .5
         self.started, self.started_f, self.notes, self.prev = False, 0.0, set(), {}
         self.text, self.text_t, self.text_a, self.text_until = None, ("樂團準備中…", ""), 0.0, 1e9
@@ -298,14 +298,14 @@ class Show:
 
     def handle(self, line: str) -> None:
         if line.startswith("f "):
-            k, s, h, b, ky, m, tone, mpos, _beat, sidx = map(float, line[2:].split())
-            if self.onset("k", k, 1.2, .25):
-                self.kick = max(self.kick, 1.0)
+            k, s, h, b, ky, m, tone, mpos, pad, _beat, sidx = map(float, line[2:].split())
+            if k > .25:  # 大鼓、小鼓、hi-hat 是鼓手實際打下去的力度，只在打擊那一幀不是 0
+                self.kick = max(self.kick, min(1.0, .3 + k))
                 self.kick_age = 0.0
-            if self.onset("s", s, 1.35, .25):
-                self.snare = max(self.snare, .9)
+            if s > .25:
+                self.snare = max(self.snare, min(.9, .2 + s))
             self.hat, self.bass = max(self.hat, min(1, h)), max(self.bass, min(1, b))
-            self.keys, self.tone_t = max(self.keys, min(1, ky)), tone
+            self.keys, self.pad, self.tone_t = max(self.keys, min(1, ky)), max(self.pad, min(1, pad)), tone
             if self.onset("m", m, 1.25, .15) and not self.notes:
                 self.mel_pos_t = mpos
             self.mel = max(self.mel, min(1, m))
@@ -351,6 +351,7 @@ class Show:
         self.hat *= math.exp(-dt * 14)
         self.bass *= math.exp(-dt * (3 if sc else 2.5))
         self.keys *= math.exp(-dt * (1.5 if sc else .9))
+        self.pad *= math.exp(-dt * (1.5 if sc else .9))
         self.mel *= math.exp(-dt * 5)
         self.hum = max(self.hum * math.exp(-dt * 4), .7 if self.notes else 0.0)
 
@@ -439,7 +440,7 @@ class VJ(OpenGLFrame):
         GL.glUniform2f(U["uRes"], self.rw, self.rh)
         for n, v in (("uTime", t), ("uBeat", s.beats), ("uFlow", s.flow), ("uMix", s.mix), ("uKickAge", s.kick_age),
                      ("uStarted", s.started_f), ("uTextA", s.text_a), ("uKick", s.kick), ("uSnare", s.snare),
-                     ("uHat", s.hat), ("uBass", s.bass), ("uKeys", s.keys), ("uTone", s.tone), ("uMel", s.mel),
+                     ("uHat", s.hat), ("uBass", s.bass), ("uKeys", s.pad), ("uTone", s.tone), ("uMel", s.mel),
                      ("uMelPos", s.mel_pos), ("uHum", s.hum), ("uObjAF", fades[0]), ("uObjBF", fades[1])):
             GL.glUniform1f(U[n], v)
         vv = s.beats / (128 if s.scene else 64)  # 三種配色變化，每 64/128 拍輪替
@@ -504,12 +505,14 @@ def demo(show: Show, stop: threading.Event) -> None:
     while not stop.is_set():
         step, bar = (f * BPM * 4 // 1500) % 16, f * BPM // 1500 // 4
         sc = (bar // 8) % 2
-        kick = 1.0 if step in ((0, 7, 10) if sc == 0 else (0, 6, 10)) else .1
-        snare = 1.0 if step in ((4, 12) if sc == 0 else (8,)) else .1
-        hat = .6 if (step % 2 == 0 or sc) else .1
+        hit = f == 0 or f * BPM * 4 // 1500 != (f - 1) * BPM * 4 // 1500  # 這一幀是 16 分音符的開頭（鼓只在打擊那一幀有值）
+        kick = 1.0 if hit and step in ((0, 7, 10) if sc == 0 else (0, 6, 10)) else 0
+        snare = 1.0 if hit and step in ((4, 12) if sc == 0 else (8,)) else 0
+        hat = .6 if hit and (step % 2 == 0 or sc) else 0
         keys = .8 if step == 0 else .3
         mel = .9 if (step in (2, 7, 11, 14)) else .2
-        show.lines.put(f"f {kick:.2f} {snare:.2f} {hat:.2f} {kick:.2f} {keys:.2f} {mel:.2f} .4 {.3 + .4 * (step / 16):.2f} 0 {sc}")
+        show.lines.put(f"f {kick:.2f} {snare:.2f} {hat:.2f} {.8 if step in (0, 7, 10) else .2:.2f} {keys:.2f} {mel:.2f} .4 "
+                       f"{.3 + .4 * (step / 16):.2f} {keys + .2:.2f} 0 {sc}")
         if f % 50 == 25:
             note = 55 + (f // 50) % 24
             show.lines.put(f"n 1 {note}")
