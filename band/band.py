@@ -2,6 +2,7 @@
 import os
 import queue
 import random
+import socket
 import subprocess
 import sys
 import threading
@@ -17,7 +18,7 @@ from band.links import Human, VisualLink, start_windows
 from band.mixer import levels, limit, pan_gains
 from band.mrt2 import BatchedMRT2, style_tokens
 from band.settings import (AGENTS, BLENDS, BPM, CHORD_SETTLE, DROP_P, FRAMES_PER_CALL, GAINS, GROOVE_PYTHON, MASTER,
-                           NEXT_CHORD, PAN, PHRASE_BARS, QUEUE_FRAMES, REJOIN_P, ROOT, STYLES, TEMPERATURE)
+                           NEXT_CHORD, PAN, PHRASE_BARS, QUEUE_FRAMES, REJOIN_P, ROOT, STYLES, TEMPERATURE, VISUAL_TCP)
 
 
 def main() -> None:
@@ -25,12 +26,18 @@ def main() -> None:
     import pasimple  # 經 WSLg 播放到 Windows 喇叭
 
     jax.config.update("jax_compilation_cache_dir", os.path.expanduser("~/.cache/jax"))  # 編譯結果存起來，第二次啟動快很多
+    try:  # 已經有一個樂團在跑時，連接埠都被占用，新的會收不到鍵盤和視覺的指令
+        socket.create_connection(VISUAL_TCP, timeout=0.5).close()
+        print("⚠ 已經有一個樂團在執行（連接埠被占用）；請先結束它（視覺視窗按 Q 或終端機按 Enter）", flush=True)
+        return
+    except OSError:
+        pass
 
     # ---- 啟動其他程式、載入模型 ----
     styles = list(STYLES)
     mix_gains = {a: GAINS[a] * pan_gains(PAN[a]) for a in GAINS}  # 每個樂器的 [左, 右] 音量
-    stop, switch = threading.Event(), threading.Event()  # switch：視覺視窗要求切換風格
-    link = VisualLink(stop, switch)
+    stop, paused = threading.Event(), threading.Event()
+    link = VisualLink(stop)
     visual = None if "--no-visual" in sys.argv else start_windows("vj_tk.py")  # 視覺先開，載入模型時就看得到
     groove_python, groove = os.path.expanduser(GROOVE_PYTHON), None
     if os.path.exists(groove_python):
@@ -52,6 +59,26 @@ def main() -> None:
     human = Human(link)
     audio_q: "queue.Queue[tuple]" = queue.Queue(maxsize=QUEUE_FRAMES)  # (混音, 給視覺的那一幀資料)
     dropouts, gen_ms = [0], []
+    instruments = list(GAINS)  # m1–m6 對應的樂器
+    muted = set()  # 觀眾手動靜音的樂器
+
+    def commands() -> list:
+        """視覺視窗送來的指令：q 結束、p 暫停/繼續、m<n> 切靜音，這三個在這裡處理；其他（s = 切換風格）回傳給呼叫的人。"""
+        out = []
+        while not link.commands.empty():
+            c = link.commands.get()
+            if c == "q":
+                stop.set()
+            elif c == "p":
+                paused.clear() if paused.is_set() else paused.set()
+                print("⏸ 暫停" if paused.is_set() else "▶ 繼續", flush=True)
+            elif c.startswith("m") and c[1:].isdigit() and 1 <= int(c[1:]) <= len(instruments):
+                a = instruments[int(c[1:]) - 1]
+                muted.symmetric_difference_update({a})
+                print(f"🔇 {a} 靜音" if a in muted else f"🔊 {a} 回來", flush=True)
+            else:
+                out.append(c)
+        return out
 
     def wait_for_chord(style: str) -> tuple:
         """等觀眾彈第一個和弦；期間按空白鍵可以換起始風格。回傳 (起始風格, 和弦) 或 (風格, None) = 被結束。"""
@@ -59,8 +86,7 @@ def main() -> None:
         link.send(f"w|{style}")
         key = None
         while not stop.is_set() and key is None:
-            if switch.is_set():
-                switch.clear()
+            if "s" in commands():
                 style = styles[(styles.index(style) + 1) % len(styles)]
                 print(f"🔀 起始風格：{style}", flush=True)
                 link.send(f"w|{style}")
@@ -91,8 +117,7 @@ def main() -> None:
 
         while not stop.is_set():
             # ---- 觀眾的輸入 ----
-            if switch.is_set():
-                switch.clear()
+            if "s" in commands():
                 pending = styles[(styles.index(pending or style) + 1) % len(styles)]
                 print(f"🔀 下一段開頭切換到 {pending}", flush=True)
                 link.send(f"p|{pending}")
@@ -134,7 +159,8 @@ def main() -> None:
             audio, state = band.generate(rows, state)
             gen_ms.append((time.perf_counter() - t0) * 1000 / FRAMES_PER_CALL)
             for k in range(FRAMES_PER_CALL):
-                active = {a: g + ((1.0 if sounding else target[a]) - g) * 0.04 for a, g in active.items()}  # 約一小節淡入淡出；人類彈琴時全員回來
+                goal = lambda a: 0.0 if a in muted else (1.0 if sounding else target[a])  # 手動靜音優先；人類彈琴時全員回來
+                active = {a: g + (goal(a) - g) * 0.04 for a, g in active.items()}  # 約一小節淡入淡出
                 stems = {a: audio[k, i] * active[a] for i, a in enumerate(AGENTS)} | {"drums": drums[k][0] * active["drums"]}
                 if drums[k][1] is not None:
                     stems["bass"] = drums[k][1] * active["bass"]  # 這種風格的貝斯是 808
@@ -162,13 +188,16 @@ def main() -> None:
                                2, 48000, app_name="ai_duet_band",
                                tlength=tm.FRAME_BYTES * 2, prebuf=tm.FRAME_BYTES * 2,
                                minreq=tm.FRAME_BYTES) as pa:
-            first = True
+            first, silence = True, np.zeros((1920, 2), np.float32)
             while not stop.is_set():
                 if audio_q.empty():  # 生成跟不上，會斷音
                     dropouts[0] += 1
                 try:
                     mix, info = audio_q.get(timeout=0.5)
                 except queue.Empty:
+                    continue
+                if paused.is_set():  # 暫停：樂團在背後照常生成、跟著拍子走，只是不出聲；GPU 不會降頻，繼續時馬上接得上
+                    pa.write(silence.tobytes())
                     continue
                 pa.write(mix.tobytes())
                 link.send(info)  # 在真正播出時才送，畫面自然跟聲音對齊
@@ -181,15 +210,23 @@ def main() -> None:
             print(f"[延遲] 按鍵到聽到約 {QUEUE_FRAMES * 40 + pa.get_latency() / 1000:.0f} ms "
                   f"（不含 Windows 音效輸出）", flush=True)
 
-    # ---- 開始，按 Enter 結束 ----
+    # ---- 開始；終端機按 Enter 或視覺視窗按 Q 結束 ----
     threads = [threading.Thread(target=generator), threading.Thread(target=player),
                threading.Thread(target=tm.listen_midi, args=(human, stop))]
     for t in threads:
         t.start()
     bridge = start_windows("band_mrt2.py", "--midi-bridge")
-    print("按 Enter 結束", flush=True)
-    input()
-    stop.set()
+    print("按 Enter（或在視覺視窗按 Q）結束", flush=True)
+
+    def wait_enter() -> None:
+        try:
+            input()
+        except EOFError:  # 沒有終端機（測試時），就只能從視覺視窗結束
+            return
+        stop.set()
+
+    threading.Thread(target=wait_enter, daemon=True).start()
+    stop.wait()
     for p in (bridge, visual, groove):
         if p:
             p.terminate()

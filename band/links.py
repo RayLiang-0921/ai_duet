@@ -1,5 +1,6 @@
 """對外連線：送資料給視覺（並接收空白鍵）、觀眾的音符、Windows 端的 MIDI 橋接與啟動 Windows 程式。"""
 import os
+import queue
 import socket
 import subprocess
 import sys
@@ -12,10 +13,11 @@ from band.settings import MIDI_PORT, PIANO_PORT, ROOT, VISUAL_TCP
 
 class VisualLink:
     """把每幀的樂器音量、拍子、風格、觀眾的音送給 Windows 端的 vj_tk.py；沒有接上就直接丟掉。
-    視覺視窗按空白鍵會送回一個 "s"（切換風格）。"""
+    視覺視窗的按鍵會送回一行指令，放進 commands：s = 切換風格、m1–m6 = 切某個樂器靜音、p = 暫停/繼續、q = 結束。"""
 
-    def __init__(self, stop: threading.Event, switch: threading.Event) -> None:
-        self.clients, self.stop, self.switch, self.lock = [], stop, switch, threading.Lock()
+    def __init__(self, stop: threading.Event) -> None:
+        self.clients, self.stop, self.lock = [], stop, threading.Lock()
+        self.commands: "queue.Queue[str]" = queue.Queue()
         threading.Thread(target=self._accept, daemon=True).start()
 
     def _accept(self) -> None:
@@ -35,6 +37,7 @@ class VisualLink:
         server.close()
 
     def _read(self, conn: socket.socket) -> None:
+        buf = b""
         while not self.stop.is_set():
             try:
                 data = conn.recv(64)
@@ -44,8 +47,10 @@ class VisualLink:
                 return
             if not data:
                 return
-            if b"s" in data:
-                self.switch.set()
+            buf += data
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                self.commands.put(line.decode().strip())
 
     def send(self, line: str) -> None:
         with self.lock:  # 播放執行緒和 MIDI 執行緒都會送

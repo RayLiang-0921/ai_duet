@@ -257,7 +257,8 @@ class Show:
         self.kick_age, self.tone, self.tone_t, self.mel_pos, self.mel_pos_t = 9.0, .2, .2, .5, .5
         self.started, self.started_f, self.notes, self.prev = False, 0.0, set(), {}
         self.text, self.text_t, self.text_a, self.text_until = None, ("樂團準備中…", ""), 0.0, 1e9
-        self.style_names, self.conn = ["neo soul", "memphis rap"], None  # conn：連到樂團的 socket，按空白鍵時送 "s"
+        self.style_names, self.conn = ["neo soul", "memphis rap"], None  # conn：連到樂團的 socket，按鍵時送指令回去
+        self.instruments, self.muted, self.paused = ["rhodes", "guitar", "bass", "strings", "bell", "drums"], set(), False
 
     def onset(self, key: str, v: float, ratio: float, floor: float) -> bool:
         p = self.prev.get(key, 0.0)
@@ -268,17 +269,32 @@ class Show:
         self.text_t, self.text_until = (big, small), time.perf_counter() + seconds
 
     def hint(self) -> None:
-        """游標移動時提醒切換風格的鍵（開始前的等待畫面本來就寫著）。"""
+        """游標移動時提醒按鍵（開始前的等待畫面本來就寫著）。"""
         if self.started:
-            self.show_text(self.style_names[self.scene], "按空白鍵切換風格", 3)
+            self.show_text(self.style_names[self.scene], "空白鍵：切換風格   1–6：樂器靜音   P：暫停   Q：結束", 3)
 
-    def switch(self) -> None:
-        """空白鍵：請樂團在下一段切換風格。"""
+    def send(self, command: str) -> None:
+        """把指令送回樂團：s 切換風格、m1–m6 樂器靜音、p 暫停/繼續、q 結束。"""
         try:
             if self.conn:
-                self.conn.sendall(b"s\n")
+                self.conn.sendall((command + "\n").encode())
         except OSError:
             pass
+
+    def mute(self, n: int) -> None:
+        a = self.instruments[n - 1]
+        self.muted.symmetric_difference_update({a})
+        self.send(f"m{n}")
+        self.show_text(f"{a} {'靜音' if a in self.muted else '回來'}",
+                       "靜音中：" + "、".join(a for a in self.instruments if a in self.muted) if self.muted else "", 3)
+
+    def pause(self) -> None:
+        self.paused = not self.paused
+        self.send("p")
+        if self.paused:
+            self.show_text("暫停", "再按 P 繼續")
+        else:
+            self.show_text(self.style_names[self.scene], "", 2)
 
     def handle(self, line: str) -> None:
         if line.startswith("f "):
@@ -320,6 +336,8 @@ class Show:
         while not self.lines.empty():
             self.handle(self.lines.get())
         sc = self.scene
+        if self.paused:
+            dt = 0.0  # 畫面凍住
         self.beats += dt * BPM * (2 if sc else 1) / 60
         self.mix += (sc - self.mix) * min(1, dt * 2.2)
         self.started_f += ((1.0 if self.started else 0.0) - self.started_f) * min(1, dt * .8)
@@ -516,9 +534,12 @@ def main() -> None:
     vj.animate = 25  # 最多約 40 fps；畫得更快只是多佔 GPU
     root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))
     root.bind("<f>", lambda e: root.attributes("-fullscreen", not root.attributes("-fullscreen")))
-    root.bind("<q>", lambda e: root.destroy())
+    root.bind("<q>", lambda e: (show.send("q"), root.destroy()))  # 連樂團一起結束
     root.bind("<Motion>", lambda e: show.hint())
-    root.bind("<space>", lambda e: show.switch())
+    root.bind("<space>", lambda e: show.send("s"))
+    root.bind("<p>", lambda e: show.pause())
+    for n in range(1, 7):
+        root.bind(str(n), lambda e, n=n: show.mute(n))
     if "--demo" in args:
         threading.Thread(target=demo, args=(show, stop), daemon=True).start()
     else:
