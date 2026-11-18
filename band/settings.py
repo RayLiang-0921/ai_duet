@@ -14,13 +14,13 @@ AGENTS = ["rhodes", "guitar", "bass", "strings", "bell"]  # MRT2 生成的五個
 STYLES = {  # 每種風格：hi-hat 每拍幾個、各 agent 的提示詞；prompt = 接在提示詞後的風格描述、mode = 強制的調式
     "neo soul": {"hat_div": 2,
                  "prompts": {"rhodes": "solo rhodes electric piano", "guitar": "solo electric guitar",
-                             "bass": "solo electric bass", "strings": "dark strings", "bell": "digital bell"}},
+                             "bass": "solo electric bass", "strings": "cinematic strings", "bell": "digital bell"}},
     "memphis rap": {"hat_div": 4, "prompt": "dark and moody", "mode": "minor",  # 提示詞不寫 rap（會帶出鼓），一律小調
                     "prompts": {"rhodes": "solo rhodes electric piano", "guitar": "solo electric guitar",
                                 "bass": "deep sub bass",  # 有 samples/memphis rap/808.wav 時貝斯改由 808 取樣打，這個 agent 靜音
-                                "strings": "dark strings", "bell": "digital bell"}},  # "cinematic" 會帶出打擊樂
+                                "strings": "cinematic strings", "bell": "digital bell"}},
 }
-GAINS = {"rhodes": 0.8, "guitar": 0.8, "bass": 1.0, "drums": 0.7, "strings": 0.8, "bell": 1.4}  # 鐘生成出來本來就小聲
+GAINS = {"rhodes": 0.8, "guitar": 0.8, "bass": 1.0, "drums": 0.7, "strings": 0.8, "bell": 0.5}
 PAN = {"rhodes": -0.4, "guitar": 0.4, "bass": 0.0, "drums": 0.0, "strings": 0.0, "bell": 0.2}  # −1 = 最左、+1 = 最右
 MASTER = 0.85               # 整體音量；配合限制器，混音的失真約 −49 dB
 

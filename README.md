@@ -123,7 +123,7 @@ RTX 3050 Laptop 上五個 agent 約 37 ms/幀（預算 40 ms）、0 次斷音、
 
 ## 測試
 
-- 不接視覺、把分軌錄下來：`python band_mrt2.py --no-visual --record /tmp/rec.wav`（12 聲道，順序同 `AGENTS` 再加鼓；要寫在 WSL 本機硬碟，寫到 `/mnt/c` 會斷音）。沒有鍵盤時可以用 TCP 送 `"1 60\n"` 之類的行到 127.0.0.1:47600 模擬按鍵；視覺視窗的指令是送到 47601 的一行文字：`s`（切換風格）、`m 樂器名`（例如 `m strings`，切換靜音）、`p`（暫停）、`q`（結束）。
+- 不接視覺、把分軌錄下來：`python band_mrt2.py --no-visual --record /tmp/rec.wav`（12 聲道，順序同 `AGENTS` 再加鼓；要寫在 WSL 本機硬碟，寫到 `/mnt/c` 會斷音）。沒有鍵盤時可以用 TCP 送 `"1 60\n"` 之類的行到 127.0.0.1:47600 模擬按鍵；視覺視窗的指令是送到 47601 的一行文字：`s`（切換風格）、`m1`–`m6`（靜音）、`p`（暫停）、`q`（結束）。
 - 分析錄音：`python tools/analyze_rec.py /tmp/rec.wav C major 25.6`（調名、調式、切到 memphis 的秒數）。目前的數字：貝斯 95–97% 在調內、各樂器相對鼓 ±40 ms 內、沒有 MRT2 樂器鎖在拍點上打鼓。
 - 單獨測一個 agent：在 WSL 裡用 `run_band.sh` 相同的環境變數執行 `python test_mrt2.py`；視覺單獨測：`venv\Scripts\python vj_tk.py --demo`。
 

@@ -59,10 +59,11 @@ def main() -> None:
     human = Human(link)
     audio_q: "queue.Queue[tuple]" = queue.Queue(maxsize=QUEUE_FRAMES)  # (混音, 給視覺的那一幀資料)
     dropouts, gen_ms = [0], []
-    muted, snap = set(), set()  # 手動靜音的樂器；snap = 剛被手動切換、要快速淡入淡出的樂器
+    instruments = list(GAINS)  # m1–m6 對應的樂器
+    muted = set()  # 觀眾手動靜音的樂器
 
     def commands() -> list:
-        """視覺視窗送來的指令：q 結束、p 暫停/繼續、m <樂器名> 切靜音，這三個在這裡處理；其他（s = 切換風格）回傳給呼叫的人。"""
+        """視覺視窗送來的指令：q 結束、p 暫停/繼續、m<n> 切靜音，這三個在這裡處理；其他（s = 切換風格）回傳給呼叫的人。"""
         out = []
         while not link.commands.empty():
             c = link.commands.get()
@@ -71,10 +72,9 @@ def main() -> None:
             elif c == "p":
                 paused.clear() if paused.is_set() else paused.set()
                 print("⏸ 暫停" if paused.is_set() else "▶ 繼續", flush=True)
-            elif c.startswith("m ") and c[2:] in GAINS:  # 用名字不用編號，視覺和樂團的順序不同也不會對錯
-                a = c[2:]
+            elif c.startswith("m") and c[1:].isdigit() and 1 <= int(c[1:]) <= len(instruments):
+                a = instruments[int(c[1:]) - 1]
                 muted.symmetric_difference_update({a})
-                snap.add(a)
                 print(f"🔇 {a} 靜音" if a in muted else f"🔊 {a} 回來", flush=True)
             else:
                 out.append(c)
@@ -160,8 +160,7 @@ def main() -> None:
             gen_ms.append((time.perf_counter() - t0) * 1000 / FRAMES_PER_CALL)
             for k in range(FRAMES_PER_CALL):
                 goal = lambda a: 0.0 if a in muted else (1.0 if sounding else target[a])  # 手動靜音優先；人類彈琴時全員回來
-                active = {a: g + (goal(a) - g) * (0.25 if a in snap else 0.04) for a, g in active.items()}  # 自動編制約一小節淡入淡出，手動約 0.2 秒
-                snap.difference_update({a for a in snap if abs(goal(a) - active[a]) < 0.01})  # 就地改，不能用 -=（會變成區域變數）
+                active = {a: g + (goal(a) - g) * 0.04 for a, g in active.items()}  # 約一小節淡入淡出
                 stems = {a: audio[k, i] * active[a] for i, a in enumerate(AGENTS)} | {"drums": drums[k][0] * active["drums"]}
                 if drums[k][1] is not None:
                     stems["bass"] = drums[k][1] * active["bass"]  # 這種風格的貝斯是 808
