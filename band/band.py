@@ -22,6 +22,8 @@ from band.settings import (AGENTS, BLENDS, BPM, CHORD_SETTLE, DROP_P, DRUM_WORDS
                            INSTRUMENTS, LEVEL, MASTER, NEXT_CHORD, PAN, PHRASE_BARS, QUEUE_FRAMES, REJOIN_P, ROOT, STYLES,
                            TEMPERATURE, VISUAL_TCP)
 
+CUSTOM_STYLES = os.path.join(ROOT, "custom_styles.txt")  # 自訂風格清單：一行一個「風格描述 | 根據的風格」
+
 
 def pool(slot: str, style: str) -> list:
     """這個位置在這種風格可以用的樂器 [(名稱, 提示詞, 音量)]；打字新增的風格用它所根據的風格的樂器。"""
@@ -96,26 +98,43 @@ def main() -> None:
     muted = set()  # 觀眾手動靜音的樂器（m1–m6 = GAINS 的順序）
     new_styles: "queue.Queue[str]" = queue.Queue()  # 打字新增、已經準備好的風格
 
+    def make_style(cleaned: str, base: str) -> str:
+        """新增一個自訂風格：風格描述 = cleaned，沿用 base 風格的鼓、調式和樂器，把每個樂器的 token 準備好。回傳風格名稱。"""
+        name = cleaned[:40]
+        if name not in STYLES:
+            root_style = STYLES[base].get("base", base)
+            STYLES[name] = {**STYLES[root_style], "prompt": cleaned, "base": root_style}
+            for a in AGENTS:
+                for inst in pool(a, name):
+                    bank.warm(prompt(a, name, inst))
+            styles.append(name)
+        return name
+
     def add_style(text: str, base: str) -> None:
-        """（背景執行緒）觀眾打的風格：拿掉會帶出鼓聲的字，沿用 base 風格的鼓、調式和樂器，把每個樂器的 token 準備好。"""
+        """（背景執行緒）觀眾打的風格：拿掉會帶出鼓聲的字、準備好、記進 custom_styles.txt（下次開機還在），下一段切過去。"""
         cleaned, removed = clean_style(text)
         if removed:
             print(f"✂ 拿掉會帶出鼓聲的字：{'、'.join(removed)}", flush=True)
         if not cleaned:
             link.send(f"t|沒有可以用的風格描述|{'（拿掉了：' + '、'.join(removed) + '）' if removed else ''}|4")
             return
-        name = cleaned[:40]
-        link.send(f"t|{name}|風格準備中…{'（拿掉了：' + '、'.join(removed) + '）' if removed else ''}|30")
-        if name not in STYLES:
-            root_style = STYLES[base].get("base", base)
-            STYLES[name] = {**STYLES[root_style], "prompt": cleaned, "base": root_style}
-            t = time.perf_counter()
-            for a in AGENTS:
-                for inst in pool(a, name):
-                    bank.warm(prompt(a, name, inst))
-            print(f"✍ 新風格「{name}」準備好了（{time.perf_counter() - t:.1f} 秒，沿用 {root_style} 的鼓和樂器）", flush=True)
-            styles.append(name)
+        link.send(f"t|{cleaned[:40]}|風格準備中…{'（拿掉了：' + '、'.join(removed) + '）' if removed else ''}|30")
+        known, t = cleaned[:40] in STYLES, time.perf_counter()
+        name = make_style(cleaned, base)
+        if not known:
+            print(f"✍ 新風格「{name}」準備好了（{time.perf_counter() - t:.1f} 秒，沿用 {STYLES[name]['base']} 的鼓和樂器）", flush=True)
+            with open(CUSTOM_STYLES, "a", encoding="utf-8") as f:
+                print(f"{cleaned} | {STYLES[name]['base']}", file=f)
         new_styles.put(name)
+
+    # custom_styles.txt：事先寫好、或之前打過的自訂風格，開機就準備好，空白鍵輪換得到（演出中不用打字）
+    for line in open(CUSTOM_STYLES, encoding="utf-8") if os.path.exists(CUSTOM_STYLES) else ():
+        text, _, base = line.split("#")[0].partition("|")
+        cleaned, _ = clean_style(text.strip())
+        if cleaned:
+            make_style(cleaned, base.strip() if base.strip() in INSTRUMENTS["keys"] else styles[0])
+    if len(styles) > 2:
+        print(f"自訂風格：{'、'.join(styles[2:])}", flush=True)
 
     def commands(style: str) -> list:
         """視覺視窗送來的指令：q 結束、p 暫停/繼續、m<n> 切靜音、t <文字> 新風格，在這裡處理；其他（s = 切換風格）回傳。"""

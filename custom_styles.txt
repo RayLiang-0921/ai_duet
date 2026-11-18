@@ -1,0 +1,7 @@
+# 自訂風格：一行一個「風格描述 | 根據的風格」。開機時先準備好，演出中按空白鍵就輪換得到，不用打字。
+# 「根據的風格」是 neo soul 或 memphis rap，決定鼓組、調式和樂器池；不寫就用 neo soul。
+# 英文描述效果最好；rap、trap、drums、cinematic 這類會帶出鼓聲的字會自動拿掉。
+# 演出中在視覺視窗打的風格，也會自動加在最後面。
+rainy night lo-fi | neo soul
+smoky late night jazz club | neo soul
+haunting dark ambient | memphis rap

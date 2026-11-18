@@ -35,6 +35,7 @@ Windows                                   WSL2 (Ubuntu)
 | `band/links.py` | 視覺連線（含空白鍵）、觀眾音符、Windows 端 MIDI 橋接與鋼琴聲 |
 | `groove_server.py` | 鼓手的人味：收鼓機的 2 小節 pattern，用 GrooVAE 回傳演奏（獨立程序、自己的環境） |
 | `vj_tk.py` | 視覺（Windows 端，tkinter + OpenGL）；`--demo` 可不接樂團單獨測試 |
+| `custom_styles.txt` | 自訂風格清單：一行一個「風格描述 \| 根據的風格」，開機就準備好，空白鍵輪換得到；演出中打的風格會自動加進來 |
 | `samples/<鼓組>/` | 鼓組。`neo soul`、`memphis rap` 是挑好的（固定檔名 kick.wav…）；其他資料夾是整包音色包，鼓手照子資料夾名稱自動找大鼓、小鼓、hi-hat、open hat、rim、808，每次隨機挑一個 |
 | `test_mrt2.py` | 共用工具（時間計算、MIDI 接收、模型載入）；也可單獨跑一個 agent 的串流 |
 | `tools/analyze_rec.py` | 分析錄音：調性、跟拍、有沒有偷打鼓 |
@@ -105,7 +106,7 @@ python -m venv venv
    | 按鍵 | 作用 |
    |------|------|
    | 空白鍵 | 下一段切換風格（依序輪換，包含打字新增的） |
-   | `Enter` | 輸入一個風格描述，再按 Enter 送出、Esc 取消。英文效果最好；會帶出鼓聲的字（rap、trap、drums、cinematic…）會自動拿掉。約 7 秒準備好，在下一段接上，沿用當時風格的鼓和樂器 |
+   | `Enter` | 輸入一個風格描述，再按 Enter 送出、Esc 取消。英文效果最好；會帶出鼓聲的字（rap、trap、drums、cinematic…）會自動拿掉。約 7 秒準備好，在下一段接上，沿用當時風格的鼓和樂器，並記進 `custom_styles.txt`，下次開機空白鍵就切得到 |
    | `1`–`6` | 切換 Rhodes、吉他、貝斯、鼓、弦樂、鐘的靜音（優先於自動編制；再按一次恢復） |
    | `S` | 顯示／隱藏光柱底下的名稱（鼓會寫出目前的鼓組，memphis 時貝斯寫 808） |
    | `P` | 暫停／繼續：樂團在背後照常跟著拍子走，只是不出聲，繼續時馬上接上 |
