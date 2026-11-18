@@ -13,10 +13,12 @@ DRUM_LAG = 2                # 鼓延後幾幀：MRT2 的樂器比鼓點條件晚
 AGENTS = ["keys", "rhythm", "bass", "pad", "lead"]  # MRT2 的五個位置：和弦、節奏、貝斯、鋪底、主旋律；鼓另外由 Drummer 負責
 STYLES = {  # 每種風格：prompt = 接在樂器提示詞後的風格描述（預設是風格名稱）、mode = 強制的調式、hat_div = hi-hat 每拍幾個、
             # kits = 可用的鼓組（samples/ 底下的資料夾）、bass808 = 貝斯改由跟著大鼓的 808 取樣打、scene = 視覺的配色（0 或 1）
-            # 觀眾打字新增的風格會在執行時加進來（band/band.py 的 add_style），沿用當時風格的設定
+            # lean = 自動判斷觀眾打的風格比較像哪一種時，加給這種的分數（文字相似度，見 band/band.py 的 pick_base）
+            # 觀眾打字新增的風格會在執行時加進來（band/band.py 的 add_style），沿用最像的那種風格的設定
     "neo soul": {"hat_div": 2, "scene": 0, "kits": ["neo soul", "rnb_2000s_soul_jazz", "band sound"]},
     "memphis rap": {"hat_div": 4, "scene": 1, "prompt": "dark and moody", "mode": "minor",  # 不寫 rap（會帶出鼓），一律小調
-                    "kits": ["memphis rap", "trap", "modern trap"], "bass808": True},
+                    "kits": ["memphis rap", "trap", "modern trap"], "bass808": True,
+                    "lean": -0.04},  # 中性的描述（bossa nova、民謠）本來就稍微比較像 memphis rap，要明顯比較像才選它
 }
 INSTRUMENTS = {  # 位置 → 風格 → [(顯示名稱, 提示詞, 音量)]；第一個是開場用的。某個位置被自動編制安排休息時，會換成池裡的另一個
     # 音量 = tools/audition.py 量到的有聲時第 90 百分位，混音時拉到同一個大小。只收試音時沒走音、沒偷帶鼓聲或低頻的樂器：

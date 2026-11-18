@@ -4,7 +4,7 @@ vj_tk.py — 樂團的視覺（Windows 端，tkinter 視窗內嵌 OpenGL，用�
 run_band.bat 會把 Windows 的 python 設成用內顯（圖形設定的「省電」），RTX 3050 留給生成音樂。
 畫面是你在網頁版設計的 shader；多了第五道光束（觀眾的 MIDI），音樂開始前沒有光束。
 單獨測試（不用模型）：venv\\Scripts\\python.exe vj_tk.py --demo
-鍵：點一下畫面（或 M）選風格、Enter 輸入風格、1–6 靜音、S 光柱名稱、P 暫停、Esc 離開全螢幕、F 全螢幕、Q 結束
+鍵：點一下畫面（或 M）選風格、Enter 輸入風格（只有開始演奏前）、1–6 靜音、S 光柱名稱、P 暫停、Esc 離開全螢幕、F 全螢幕、Q 結束
 """
 import math
 import queue
@@ -18,7 +18,7 @@ import zlib
 
 import numpy as np
 from OpenGL import GL
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 from pyopengltk import OpenGLFrame
 
 VISUAL_TCP = ("127.0.0.1", 47601)  # band_mrt2.py 送資料的位置
@@ -172,8 +172,7 @@ void main(){
  col*=mix(.28+.07*sin(uTime*.6),1.,uStarted);   /* 音樂開始前：暗、慢慢呼吸 */
  col=col/(1.+col*.25);
  col=pow(col,vec3(.95));
- vec4 tt=texture2D(uText,vec2(uv.x,1.-uv.y));   /* r = 提示文字、a = 它的描邊、g = 光柱名稱、b = 名稱的描邊 */
- col*=1.-.88*max(tt.b*uStarted,tt.a*uTextA);
+ vec4 tt=texture2D(uText,vec2(uv.x,1.-uv.y));   /* r = 提示文字、g = 光柱名稱 */
  float tx=max(tt.r*uTextA,tt.g*uStarted);
  gl_FragColor=vec4(mix(col,vec3(.96,.92,.85),tx),1.);
 }
@@ -267,24 +266,19 @@ BEAM_X = (.167, .333, .5, .667, .833)  # 五道光柱的位置，和 shader 的 
 
 
 def draw_text(size: tuple, big: str, small: str = "", labels: tuple = ()) -> np.ndarray:
-    """RGBA 貼圖：R = 中間的提示文字、A = 它的陰影；G = 光柱底下的名稱、B = 名稱的陰影（柔和的暗影，亮的光柱上也看得清楚）。"""
-    img, lab, edge, msg_edge = (Image.new("L", size, 0) for _ in range(4))
+    """RGB 貼圖：R = 中間的提示文字、G = 光柱底下的名稱（沒有陰影、描邊）。"""
+    img, lab = Image.new("L", size, 0), Image.new("L", size, 0)
     d = ImageDraw.Draw(img)
     try:
         f1, f2 = ImageFont.truetype(FONT, size[1] // 14), ImageFont.truetype(FONT, size[1] // 28)
     except OSError:
         f1 = f2 = ImageFont.load_default()
-    de = ImageDraw.Draw(msg_edge)
     for text, y, font, fill in ((big, .46, f1, 255), (small, .56, f2, 190)):
         if text:
-            de.text((size[0] / 2, size[1] * y), text, fill=255, font=font, anchor="mm")
             d.text((size[0] / 2, size[1] * y), text, fill=fill, font=font, anchor="mm")
     for x, name in zip(BEAM_X, labels):
-        pos = (size[0] * x, size[1] * .955)
-        ImageDraw.Draw(edge).text(pos, name, fill=255, font=f2, anchor="mm")
-        ImageDraw.Draw(lab).text(pos, name, fill=255, font=f2, anchor="mm")
-    shadow = lambda m, r, k: np.minimum(255, np.asarray(m.filter(ImageFilter.GaussianBlur(r)), np.float32) * k).astype(np.uint8)
-    return np.stack([np.asarray(img), np.asarray(lab), shadow(edge, 5, 6), shadow(msg_edge, 7, 4)], axis=2)
+        ImageDraw.Draw(lab).text((size[0] * x, size[1] * .955), name, fill=255, font=f2, anchor="mm")
+    return np.stack([np.asarray(img), np.asarray(lab), np.zeros(size[::-1], np.uint8)], axis=2)
 
 
 class Show:
@@ -317,7 +311,7 @@ class Show:
     def hint(self) -> None:
         """游標移動時提醒按鍵（開始前的等待畫面本來就寫著）。"""
         if self.started:
-            self.show_text(self.style, "點一下畫面（或 M）：選風格   Enter：輸入風格   1–6：樂器靜音   S：光柱名稱   P：暫停   Q：結束", 3)
+            self.show_text(self.style, "點一下畫面（或 M）：選風格   1–6：樂器靜音   S：光柱名稱   P：暫停   Q：結束", 3)
 
     def send(self, command: str) -> None:
         """把指令送回樂團：g <風格> 切換風格、m1–m6 樂器靜音、p 暫停/繼續、q 結束、t <文字> 新風格。"""
@@ -387,7 +381,7 @@ class Show:
             style, scene = line[2:].split("|")
             self.started, self.scene = False, int(scene)
             self.set_style(style)
-            self.show_text("彈一個和弦，樂團就會跟著你", f"風格：{style}（點一下畫面選風格）")
+            self.show_text("彈一個和弦，樂團就會跟著你", f"風格：{style}（點一下畫面選風格，Enter 輸入新風格）")
         elif line.startswith("c|"):  # 剛切換了風格
             self.set_style(line[2:])
             self.show_text(line[2:], "風格切換", 4)
@@ -404,7 +398,7 @@ class Show:
             self.labels = tuple(line[2:].split("|"))
         elif line.startswith("k|"):  # 開始：調名|風格
             key_name, style = line[2:].split("|")
-            self.started = True
+            self.started, self.typing = True, None  # 開始演奏後不能再打字新增風格
             self.set_style(style)
             self.show_text(key_name, style, 4)
 
@@ -639,7 +633,7 @@ def main() -> None:
                 show.typing += e.char
             return
         key = e.keysym.lower()
-        if key == "return":
+        if key == "return" and not show.started:  # 只有開始演奏前可以打字
             show.typing = ""
         elif key == "escape":
             root.attributes("-fullscreen", False)
@@ -658,12 +652,13 @@ def main() -> None:
             show.mute(int(e.char))
 
     def open_menu(e=None) -> None:
-        """風格選單：現有的風格（● = 現在的），最後一項是輸入新風格。"""
+        """風格選單：現有的風格（● = 現在的）；開始演奏前，最後一項是輸入新風格。"""
         menu = tk.Menu(root, tearoff=0, font=("Microsoft JhengHei", 20))
         for name in show.style_list:
             menu.add_command(label=("● " if name == show.style else "    ") + name, command=lambda n=name: show.choose(n))
-        menu.add_separator()
-        menu.add_command(label="＋ 輸入新風格…", command=lambda: setattr(show, "typing", ""))
+        if not show.started:
+            menu.add_separator()
+            menu.add_command(label="＋ 輸入新風格…", command=lambda: setattr(show, "typing", ""))
         x, y = (e.x_root, e.y_root) if e else (root.winfo_rootx() + root.winfo_width() // 2, root.winfo_rooty() + root.winfo_height() // 3)
         menu.tk_popup(x, y)
 

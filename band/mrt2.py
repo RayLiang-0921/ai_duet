@@ -91,6 +91,12 @@ class StyleBank:
                 self.tok[key] = list(self.mrt.tokenize_style(e))
         return self.tok[key]
 
+    def similarity(self, a: str, b: str) -> float:
+        """兩句文字的 embedding 有多像（cosine，-1–1）。"""
+        with self.lock:
+            x, y = self._embedding(a).ravel(), self._embedding(b).ravel()
+        return float(x @ y / (np.linalg.norm(x) * np.linalg.norm(y)))
+
     def load_encoder(self) -> None:
         """載入文字模型（第一次轉換要 18 秒）。風格都在硬碟快取時，開機不會用到它；要是拖到演出中第一次打字才載入，
         會卡住生成好幾秒、造成斷音，所以開機時在背景先載好。"""

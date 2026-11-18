@@ -128,13 +128,20 @@ def main() -> None:
     dropouts, gen_ms = [0], []
     muted = set()  # 觀眾手動靜音的樂器（m1–m6 = GAINS 的順序）
     new_styles: "queue.Queue[str]" = queue.Queue()  # 打字新增、已經準備好的風格
+    playing = threading.Event()  # 樂器開始演奏了：之後不能再打字新增風格，只能從選單選現有的
+
+    def pick_base(text: str) -> str:
+        """觀眾打的風格（還沒拿掉鼓的字，trap、drill 這類字正好說明該用哪種鼓）文字上最像哪種原本的風格；
+        自訂風格用那種風格的鼓組、調式和樂器，鼓才會符合曲風。"""
+        roots = [s for s in STYLES if "base" not in STYLES[s]]
+        return max(roots, key=lambda b: bank.similarity(text, b) + STYLES[b].get("lean", 0.0))
 
     def make_style(cleaned: str, base: str) -> str:
         """新增一個自訂風格：風格描述 = cleaned，沿用 base 風格的鼓、調式和樂器，把每個樂器的 token 準備好。回傳風格名稱。"""
         name = cleaned[:40]
         if name not in STYLES:
-            root_style = STYLES[base].get("base", base)
-            STYLES[name] = {**STYLES[root_style], "prompt": cleaned, "base": root_style}
+            STYLES[name] = {**STYLES[base], "prompt": cleaned, "base": base}
+            STYLES[name].pop("lean", None)
             for a in AGENTS:
                 for inst in pool(a, name):
                     bank.warm(prompt(a, name, inst))
@@ -142,8 +149,9 @@ def main() -> None:
             link.send("y|" + "|".join(styles))
         return name
 
-    def add_style(text: str, base: str) -> None:
-        """（背景執行緒）觀眾打的風格：拿掉會帶出鼓聲的字、準備好、記進 custom_styles.txt（下次開機還在），下一段切過去。"""
+    def add_style(text: str) -> None:
+        """（背景執行緒）開始演奏前觀眾打的風格：拿掉會帶出鼓聲的字、判斷用哪種風格的鼓、準備好、
+        記進 custom_styles.txt（下次開機還在），當作起始風格。"""
         cleaned, removed = clean_style(text)
         if removed:
             print(f"✂ 拿掉會帶出鼓聲的字：{'、'.join(removed)}", flush=True)
@@ -153,9 +161,9 @@ def main() -> None:
         link.send(f"t|{cleaned[:40]}|風格準備中…{'（拿掉了：' + '、'.join(removed) + '）' if removed else ''}|30")
         known, t = cleaned[:40] in STYLES, time.perf_counter()
         print(f"✍ 開始準備「{cleaned[:40]}」", flush=True)
-        name = make_style(cleaned, base)
+        name = make_style(cleaned, STYLES[cleaned[:40]]["base"] if known else pick_base(text))
         if not known:
-            print(f"✍ 新風格「{name}」準備好了（{time.perf_counter() - t:.1f} 秒，沿用 {STYLES[name]['base']} 的鼓和樂器）", flush=True)
+            print(f"✍ 新風格「{name}」準備好了（{time.perf_counter() - t:.1f} 秒，最像 {STYLES[name]['base']}，用它的鼓和樂器）", flush=True)
             with open(CUSTOM_STYLES, "a", encoding="utf-8") as f:
                 print(f"{cleaned} | {STYLES[name]['base']}", file=f)
         new_styles.put(name)
@@ -165,12 +173,12 @@ def main() -> None:
         text, _, base = line.split("#")[0].partition("|")
         cleaned, _ = clean_style(text.strip())
         if cleaned:
-            make_style(cleaned, base.strip() if base.strip() in INSTRUMENTS["keys"] else styles[0])
+            make_style(cleaned, base.strip() if base.strip() in INSTRUMENTS["keys"] else pick_base(text.strip()))
     if len(styles) > 2:
         print(f"自訂風格：{'、'.join(styles[2:])}", flush=True)
 
-    def commands(style: str) -> list:
-        """視覺視窗送來的指令：q 結束、p 暫停/繼續、m<n> 切靜音、t <文字> 新風格在這裡處理；
+    def commands() -> list:
+        """視覺視窗送來的指令：q 結束、p 暫停/繼續、m<n> 切靜音、t <文字> 新風格（只有開始演奏前）在這裡處理；
         g <風格>（選單選的風格）回傳那個風格名稱的清單。"""
         out = []
         while not link.commands.empty():
@@ -184,9 +192,11 @@ def main() -> None:
                 a = list(GAINS)[int(c[1:]) - 1]
                 muted.symmetric_difference_update({a})
                 print(f"🔇 {a} 靜音" if a in muted else f"🔊 {a} 回來", flush=True)
+            elif c.startswith("t ") and c[2:].strip() and playing.is_set():
+                print(f"✍ 演出中不能新增風格，略過：{c[2:].strip()}", flush=True)
             elif c.startswith("t ") and c[2:].strip():
                 print(f"✍ 觀眾輸入風格：{c[2:].strip()}", flush=True)
-                threading.Thread(target=add_style, args=(c[2:].strip(), style), daemon=True).start()
+                threading.Thread(target=add_style, args=(c[2:].strip(),), daemon=True).start()
             elif c.startswith("g ") and c[2:] in STYLES:
                 out.append(c[2:])
         return out
@@ -198,7 +208,7 @@ def main() -> None:
         link.send(f"w|{style}|{STYLES[style]['scene']}")
         key = None
         while not stop.is_set() and key is None:
-            new = next(iter(commands(style)[-1:]), None)
+            new = next(iter(commands()[-1:]), None)
             while not new_styles.empty():
                 new = new_styles.get()
             if new:
@@ -216,6 +226,7 @@ def main() -> None:
         if key is None:
             return
         root, played_mode = key
+        playing.set()
         mode = STYLES[style].get("mode", played_mode)  # memphis 一律小調
         key_name = f"{tm.NOTE_NAMES[root]} {mode}"
         print(f"🎵 {key_name}，{style}，開始！", flush=True)
@@ -243,7 +254,7 @@ def main() -> None:
 
         while not stop.is_set():
             # ---- 觀眾的輸入 ----
-            new = next(iter(commands(style)[-1:]), None)  # 選單選的風格
+            new = next(iter(commands()[-1:]), None)  # 選單選的風格
             while not new_styles.empty():
                 new = new_styles.get()
             if new == style and pending:  # 選回現在的風格 = 取消切換

@@ -188,6 +188,7 @@ class Drummer:
                 i, y = pos - start, self.last808[root_pc]
                 self.buf808[i: i + 240] *= np.linspace(1, 0, 240)[:, None]  # 5 ms 內切掉上一個 808
                 self.buf808[i + 240:] = 0
+                y = y[: len(self.buf808) - i]  # 調低音高後可能比緩衝還長，超過的切掉
                 self.buf808[i: i + len(y)] += 0.35 * (v / 127) ** 0.5 * y  # 取樣峰值 1，壓到跟 MRT2 貝斯差不多的音量
         out = self.buf[:1920].copy()
         self.buf[:-1920] = self.buf[1920:]
