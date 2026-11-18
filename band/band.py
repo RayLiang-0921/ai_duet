@@ -272,13 +272,15 @@ def main() -> None:
             while not guard.results.empty():
                 tag, drum, voice = guard.results.get()
                 a, key = asked.pop(tag)
-                if key == heard_key[a] and max(drum, voice) > LEAK_LIMIT and a not in leaking:
+                drum_limit = 0.7 if a == "bass" else LEAK_LIMIT  # 貝斯彈短音，本來就有點像打擊，只有很像鼓才算
+                if key == heard_key[a] and (drum > drum_limit or voice > LEAK_LIMIT) and a not in leaking:
                     banned.add(key)
                     leaking.add(a)
                     options = [i for i in pool(a, style) if (style, i[0]) not in banned]
                     if options and not pending:
                         fix[a] = rng.choice(options)
-                    print(f"🚫 {a} 的 {key[1]} 聽起來有{'人聲' if voice >= drum else '鼓聲'}（{max(drum, voice):.2f}），先關掉"
+                    what = f"人聲（{voice:.2f}）" if voice > LEAK_LIMIT else f"鼓聲（{drum:.2f}）"
+                    print(f"🚫 {a} 的 {key[1]} 聽起來有{what}，先關掉"
                           f"{'，下一段換 ' + fix[a][0] if a in fix else '；這種風格沒有別的樂器可換，這個位置先休息'}", flush=True)
             if frame % 60 < FRAMES_PER_CALL:
                 for n in range(len(AGENTS)):

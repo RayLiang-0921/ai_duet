@@ -15,8 +15,10 @@ class VisualLink:
     """把每幀的樂器音量、拍子、風格、觀眾的音送給 Windows 端的 vj_tk.py；沒有接上就直接丟掉。
     視覺視窗的按鍵會送回一行指令，放進 commands：s = 切換風格、m1–m6 = 切某個樂器靜音、p = 暫停/繼續、q = 結束。"""
 
+    STICKY = ("y|", "w|", "k|", "c|", "i|", "l|")  # 狀態訊息：新連上的視覺（例如視窗重開）會先收到每種最新的一行
+
     def __init__(self, stop: threading.Event) -> None:
-        self.clients, self.stop, self.lock = [], stop, threading.Lock()
+        self.clients, self.stop, self.lock, self.state = [], stop, threading.Lock(), {}
         self.commands: "queue.Queue[str]" = queue.Queue()
         threading.Thread(target=self._accept, daemon=True).start()
 
@@ -32,7 +34,12 @@ class VisualLink:
             except socket.timeout:
                 continue
             conn.settimeout(0.05)
-            self.clients.append(conn)
+            with self.lock:
+                try:
+                    conn.sendall("".join(line + "\n" for line in self.state.values()).encode())
+                except OSError:
+                    continue
+                self.clients.append(conn)
             threading.Thread(target=self._read, args=(conn,), daemon=True).start()
         server.close()
 
@@ -54,6 +61,8 @@ class VisualLink:
 
     def send(self, line: str) -> None:
         with self.lock:  # 播放執行緒和 MIDI 執行緒都會送
+            if line[:2] in self.STICKY:
+                self.state[line[:2]] = line
             for c in list(self.clients):
                 try:
                     c.sendall((line + "\n").encode())

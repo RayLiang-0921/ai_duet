@@ -42,6 +42,7 @@ Windows                                   WSL2 (Ubuntu)
 | `test_mrt2.py` | 共用工具（時間計算、MIDI 接收、模型載入）；也可單獨跑一個 agent 的串流 |
 | `tools/analyze_rec.py` | 分析錄音：調性、跟拍、有沒有偷打鼓 |
 | `tools/audition.py` | 試音：候選樂器在兩種風格各生成 20 秒，量走音、跟拍、偷帶鼓聲或人聲、低頻、音量；也量文字轉風格的時間 |
+| `run_overnight.bat`、`tools/overnight.sh` | 整晚跑：`tools/explore.py`（約 50 種新樂器在每種風格試音）→ `tools/soak.py`（假觀眾陪樂團演到早上，抓長時間才會出現的問題）；`tools/power_guard.ps1` 在拔電或掉電時停掉測試。報告在 `reports/` |
 
 ## 環境安裝
 
@@ -134,6 +135,7 @@ RTX 3050 Laptop 上五個 agent 約 37 ms/幀（預算 40 ms）、0 次斷音、
 - 不接視覺、把分軌錄下來：`python band_mrt2.py --no-visual --record /tmp/rec.wav`（12 聲道，順序同 `AGENTS` 再加鼓；要寫在 WSL 本機硬碟，寫到 `/mnt/c` 會斷音）。沒有鍵盤時可以用 TCP 送 `"1 60\n"` 之類的行到 127.0.0.1:47600 模擬按鍵；視覺視窗的指令是送到 47601 的一行文字：`s`（切換風格）、`m1`–`m6`（靜音）、`p`（暫停）、`q`（結束）。
 - 分析錄音：`python tools/analyze_rec.py /tmp/rec.wav C major 25.6`（調名、調式、切到 memphis 的秒數）。目前的數字：貝斯 95–97% 在調內、各樂器相對鼓 ±40 ms 內、沒有 MRT2 樂器鎖在拍點上打鼓。
 - 單獨測一個 agent：在 WSL 裡用 `run_band.sh` 相同的環境變數執行 `python test_mrt2.py`；視覺單獨測：`venv\Scripts\python vj_tk.py --demo`。
+- 整晚跑：睡前插著電雙擊 `run_overnight.bat`（可以加結束時間，例如 `run_overnight.bat 06:30`，預設 07:00）。早上看 `reports/explore-日期.md`（哪些新樂器能用、音量多少）和 `reports/soak-日期.md`（斷音、錯誤、記憶體、監聽抓到哪些樂器）。跑的時候不能開樂團。
 
 ## 注意事項
 
