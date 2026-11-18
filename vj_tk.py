@@ -363,9 +363,10 @@ class Show:
 
     def handle(self, line: str) -> None:
         if line.startswith("f "):
-            vals = list(map(float, line[2:].split()))
-            k, s, h, b, ky, m, tone, mpos, pad, _beat, sidx = vals[:11]
-            rh, pd, ld = vals[11:14] if len(vals) >= 14 else (m, pad, m)  # 節奏、鋪底、主旋律（舊格式沒有就借用）
+            vals = list(map(float, line[2:].split()))  # band/mixer.py 的 levels（9 或 12 個）＋ 拍子 ＋ 配色
+            k, s, h, b, ky, m, tone, mpos, pad = vals[:9]
+            rh, pd, ld = vals[9:12] if len(vals) == 14 else (m, pad, m)  # 節奏、鋪底、主旋律（demo 的舊格式沒有就借用）
+            sidx = vals[-1]
             self.rhythm, self.pad_beam, self.lead = max(self.rhythm, min(1, rh)), max(self.pad_beam, min(1, pd)), max(self.lead, min(1, ld))
             if k > .25:  # 大鼓、小鼓、hi-hat 是鼓手實際打下去的力度，只在打擊那一幀不是 0
                 self.kick = max(self.kick, min(1.0, .3 + k))
