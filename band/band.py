@@ -349,8 +349,7 @@ def main() -> None:
                 if names != sent_names:  # 樂器名稱給視覺：靜音提示（i|，GAINS 的順序）和光柱名稱（l|，按 S 顯示）
                     sent_names = names
                     link.send("i|" + "|".join(names))
-                    link.send(f"l|鼓 · {drummer.kit['name']}|{names[2]}|你|{lineup['keys'][0]}|"
-                              f"{lineup['rhythm'][0]}＋{lineup['lead'][0]}")
+                    link.send(f"l|鼓|{names[2]}|{names[0]}|鋼琴（你）|{names[1]}|{names[4]}|{names[5]}")  # 七道光柱，由左到右
                 rows.append(band.frame_row([agent_conditioning(a, frame + k, root, mode, tok,
                                                                (sounding, onsets if k == 0 else set()), degree)
                                             for a in AGENTS]))

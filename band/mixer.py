@@ -23,7 +23,8 @@ def limit(x: np.ndarray, threshold: float = 0.8) -> np.ndarray:
 def levels(stems: dict, hits: list) -> str:
     """一幀 → 給視覺的 9 個數值（大約 0–1），順序對應 vj_tk.Show.handle：
     大鼓、小鼓、hi-hat（hits：鼓手這一幀真的打下去的力度，不從聲音猜）、貝斯、和弦（keys）、旋律（rhythm＋lead）、
-    和弦音色、旋律高低、和弦與鋪底合起來（背景亮度）。除數是實際音量的第 90 百分位，所以強的音約為 1。"""
+    和弦音色、旋律高低、和弦與鋪底合起來（背景亮度）；最後 3 個是節奏、鋪底、主旋律各自的光柱。
+    除數是實際音量的第 90 百分位，所以強的音約為 1。"""
     mono = {a: s.mean(axis=1) for a, s in stems.items()}
     spectrum = lambda a: np.abs(np.fft.rfft(mono[a] * WINDOW)) ** 2
     rms = lambda a: float(np.sqrt((mono[a] ** 2).mean()))
@@ -31,5 +32,6 @@ def levels(stems: dict, hits: list) -> str:
                                                / math.log2(hi / lo)))
     v = [*hits, rms("bass") / 0.15, rms("keys") / 0.1, (rms("rhythm") + rms("lead")) / 0.15,
          centroid(spectrum("keys"), 200, 2000), centroid(spectrum("rhythm"), 150, 3000),
-         (rms("keys") + rms("pad")) / 0.25]  # 鋪底一直在，除數放大才不會整個畫面過亮
+         (rms("keys") + rms("pad")) / 0.25,  # 鋪底一直在，除數放大才不會整個畫面過亮
+         rms("rhythm") / 0.1, rms("pad") / 0.12, rms("lead") / 0.1]
     return " ".join(f"{min(x, 2.0):.2f}" for x in v)

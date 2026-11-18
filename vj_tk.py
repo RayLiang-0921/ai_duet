@@ -2,7 +2,7 @@
 vj_tk.py — 樂團的視覺（Windows 端，tkinter 視窗內嵌 OpenGL，用內顯畫，不搶 RTX 3050）。
 由 band_mrt2.py 自動啟動，連到 WSL 的樂團接收：每幀各樂器的音量、拍子、風格、觀眾彈的音。
 run_band.bat 會把 Windows 的 python 設成用內顯（圖形設定的「省電」），RTX 3050 留給生成音樂。
-畫面是你在網頁版設計的 shader；多了第五道光束（觀眾的 MIDI），音樂開始前沒有光束。
+畫面是你在網頁版設計的 shader；七道光束 = 每個聲音一道（中間是觀眾的 MIDI），音樂開始前沒有光束。
 單獨測試（不用模型）：venv\\Scripts\\python.exe vj_tk.py --demo
 鍵：點一下畫面（或 M）選風格、Enter 輸入風格（只有開始演奏前）、1–6 靜音、S 光柱名稱、- / = 亮度、P 暫停、Esc 離開全螢幕、F 全螢幕、Q 結束
 """
@@ -33,7 +33,8 @@ uniform float uTime,uBeat,uFlow,uMix,uKickAge,uStarted,uTextA;
 uniform float uKick,uSnare,uHat,uBass,uKeys,uTone,uMel,uMelPos,uHum;
 uniform sampler2D uObjA,uObjB,uText;
 uniform vec3 uW;
-uniform vec4 uLv;
+uniform vec4 uLv;    /* 光柱亮度：鼓、貝斯、和弦、節奏 */
+uniform vec2 uLv2;   /* 光柱亮度：鋪底、主旋律 */
 uniform vec2 uObjOff;
 uniform float uObjAF,uObjBF;
 uniform float uHue,uHueA;   /* 自訂風格：整個畫面轉成另一個色相 */
@@ -60,9 +61,10 @@ float beam(vec2 uv,float cx,float lv,float t){
  float h=.08+lv*.85;
  return exp(-x*x)*smoothstep(h,0.,uv.y)*(.45+1.3*lv)*(.55+.8*n);
 }
-/* 五道光束，由左到右：鼓（大鼓、小鼓）、貝斯（memphis 是 808）、觀眾（中間）、Rhodes、旋律（吉他＋鐘） */
+/* 七道光束，每個聲音一道，由左到右：鼓、貝斯（memphis 是 808）、和弦、觀眾（中間，hbeam）、節奏、鋪底、主旋律 */
 float ibeams(vec2 uv,float t){
- return beam(uv,.167,uLv.x,t)+beam(uv,.333,uLv.y,t)+beam(uv,.667,uLv.z,t)+beam(uv,.833,uLv.w,t);
+ return beam(uv,.125,uLv.x,t)+beam(uv,.25,uLv.y,t)+beam(uv,.375,uLv.z,t)+beam(uv,.625,uLv.w,t)
+       +beam(uv,.75,uLv2.x,t)+beam(uv,.875,uLv2.y,t);
 }
 float hbeam(vec2 uv,float t){return beam(uv,.5,uHum,t);}
 
@@ -115,7 +117,7 @@ vec3 neo(vec2 uv,vec2 p){
  float caus=pow(.5+.5*sin(wc*1.7),7.);
  col+=c3*caus*(.05+.22*uMel+.1*uHat)*(.5+.8*A);
  col*=1.-.7*smoothstep(.3,1.2,d0);
- col+=(c3*ibeams(uv,uTime)+vec3(.85,.95,1.)*hbeam(uv,uTime)*1.2)*.7*uStarted;
+ col+=(c3*ibeams(uv,uTime)+vec3(.85,.95,1.)*hbeam(uv,uTime)*1.2)*.5*uStarted;
  return col;
 }
 
@@ -158,7 +160,7 @@ vec3 trap(vec2 uv,vec2 p){
  col+=(hash(uv*uRes+fract(uTime)*91.)-.5)*(.045+.06*uHat);
  col*=.86+.14*sin(uv.y*uRes.y*1.7);
  col*=1.-.85*smoothstep(.35,1.25,d0);
- col+=((vein*1.5+vec3(.05,.03,.035))*ibeams(uv,uTime)+vec3(.9,.95,1.)*hbeam(uv,uTime)*1.1)*1.6*uStarted;
+ col+=((vein*1.5+vec3(.05,.03,.035))*ibeams(uv,uTime)+vec3(.9,.95,1.)*hbeam(uv,uTime)*1.1)*1.15*uStarted;
  return max(col,0.);
 }
 
@@ -180,7 +182,7 @@ void main(){
 """
 
 UNIFORMS = ["uRes", "uTime", "uBeat", "uFlow", "uMix", "uKickAge", "uStarted", "uTextA", "uKick", "uSnare", "uHat",
-            "uBass", "uKeys", "uTone", "uMel", "uMelPos", "uHum", "uObjA", "uObjB", "uText", "uW", "uLv", "uObjOff",
+            "uBass", "uKeys", "uTone", "uMel", "uMelPos", "uHum", "uObjA", "uObjB", "uText", "uW", "uLv", "uLv2", "uObjOff",
             "uObjAF", "uObjBF", "uHue", "uHueA", "uBright"]
 NEO_OBJECTS, TRAP_OBJECTS = ["candle", "glass", "leaf", "lava"], ["cassette", "pyramid", "sub"]
 EXTRA_OBJECTS = ["moon", "star", "spiral", "eye"]  # 只給自訂風格隨機挑
@@ -263,7 +265,7 @@ def draw_object(name: str) -> np.ndarray:
     return np.asarray(img)[::-1].copy()  # OpenGL 的貼圖第一列在下面
 
 
-BEAM_X = (.167, .333, .5, .667, .833)  # 五道光柱的位置，和 shader 的 ibeams / hbeam 一致
+BEAM_X = (.125, .25, .375, .5, .625, .75, .875)  # 七道光柱的位置，和 shader 的 ibeams / hbeam 一致
 
 
 def draw_text(size: tuple, big: str, small: str = "", labels: tuple = ()) -> np.ndarray:
@@ -290,11 +292,12 @@ class Show:
         self.t0 = self.last = time.perf_counter()
         self.scene, self.mix, self.beats, self.flow = 0, 0.0, 0.0, 0.0
         self.kick = self.snare = self.hat = self.bass = self.keys = self.mel = self.hum = self.pad = 0.0  # pad：鍵盤＋弦樂（背景）
+        self.rhythm = self.pad_beam = self.lead = 0.0  # 節奏、鋪底、主旋律各自的光柱
         self.kick_age, self.tone, self.tone_t, self.mel_pos, self.mel_pos_t = 9.0, .2, .2, .5, .5
         self.started, self.started_f, self.notes, self.prev = False, 0.0, set(), {}
         self.text, self.text_t, self.text_a, self.text_until = None, ("樂團準備中…", ""), 0.0, 1e9
         self.conn = None  # 連到樂團的 socket，按鍵時送指令回去
-        self.labels, self.labels_on = ("鼓", "貝斯", "你", "Rhodes", "吉他＋鐘"), False  # 光柱名稱（樂團會更新），S 鍵顯示/隱藏
+        self.labels, self.labels_on = ("鼓", "電貝斯", "Rhodes", "鋼琴（你）", "電吉他", "大提琴", "鐘"), False  # 光柱名稱（樂團會更新），S 鍵顯示/隱藏
         self.instruments = ["Rhodes", "電吉他", "電貝斯", "鼓", "弦樂", "鐘"]  # 1–6 靜音鍵對應的樂器名稱（樂團會更新）
         self.bright = 1.0  # 整體亮度：- / = 鍵每次調 10%
         self.muted, self.paused, self.typing = set(), False, None  # muted：靜音中的鍵號；typing：正在打的風格（None = 沒在打字）
@@ -360,7 +363,10 @@ class Show:
 
     def handle(self, line: str) -> None:
         if line.startswith("f "):
-            k, s, h, b, ky, m, tone, mpos, pad, _beat, sidx = map(float, line[2:].split())
+            vals = list(map(float, line[2:].split()))
+            k, s, h, b, ky, m, tone, mpos, pad, _beat, sidx = vals[:11]
+            rh, pd, ld = vals[11:14] if len(vals) >= 14 else (m, pad, m)  # 節奏、鋪底、主旋律（舊格式沒有就借用）
+            self.rhythm, self.pad_beam, self.lead = max(self.rhythm, min(1, rh)), max(self.pad_beam, min(1, pd)), max(self.lead, min(1, ld))
             if k > .25:  # 大鼓、小鼓、hi-hat 是鼓手實際打下去的力度，只在打擊那一幀不是 0
                 self.kick = max(self.kick, min(1.0, .3 + k))
                 self.kick_age = 0.0
@@ -396,7 +402,7 @@ class Show:
             self.instruments = line[2:].split("|")
         elif line.startswith("p|"):  # 已經按了切換，下一段生效
             self.show_text(line[2:], "下一段開始")
-        elif line.startswith("l|"):  # 五道光柱的名稱
+        elif line.startswith("l|"):  # 七道光柱的名稱
             self.labels = tuple(line[2:].split("|"))
         elif line.startswith("k|"):  # 開始：調名|風格
             key_name, style = line[2:].split("|")
@@ -433,6 +439,9 @@ class Show:
         self.keys *= math.exp(-dt * (1.5 if sc else .9))
         self.pad *= math.exp(-dt * (1.5 if sc else .9))
         self.mel *= math.exp(-dt * 5)
+        self.rhythm *= math.exp(-dt * 5)
+        self.lead *= math.exp(-dt * 5)
+        self.pad_beam *= math.exp(-dt * (1.5 if sc else .9))
         self.hum = max(self.hum * math.exp(-dt * 4), .7 if self.notes else 0.0)
 
 
@@ -536,7 +545,8 @@ class VJ(OpenGLFrame):
         w3 = [0.0, 0.0, 0.0]
         w3[vi], w3[(vi + 1) % 3] = 1 - vb, vb
         GL.glUniform3f(U["uW"], *w3)
-        GL.glUniform4f(U["uLv"], min(1, max(s.kick, s.snare)), min(1, s.bass), min(1, s.keys), min(1, s.mel))
+        GL.glUniform4f(U["uLv"], min(1, max(s.kick, s.snare)), min(1, s.bass), min(1, s.keys), min(1, s.rhythm))
+        GL.glUniform2f(U["uLv2"], min(1, s.pad_beam), min(1, s.lead))
         GL.glUniform2f(U["uObjOff"], math.sin(t * .21) * .04, math.cos(t * .17) * .03)
         GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)
         GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, self.fbo)
