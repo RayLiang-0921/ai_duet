@@ -4,19 +4,21 @@ vj_tk.py — 樂團的視覺（Windows 端，tkinter 視窗內嵌 OpenGL，用�
 run_band.bat 會把 Windows 的 python 設成用內顯（圖形設定的「省電」），RTX 3050 留給生成音樂。
 畫面是你在網頁版設計的 shader；多了第五道光束（觀眾的 MIDI），音樂開始前沒有光束。
 單獨測試（不用模型）：venv\\Scripts\\python.exe vj_tk.py --demo
-鍵：空白鍵切換風格、Enter 輸入風格、1–6 靜音、S 光柱名稱、P 暫停、Esc 離開全螢幕、F 全螢幕、Q 結束
+鍵：點一下畫面（或 M）選風格、Enter 輸入風格、1–6 靜音、S 光柱名稱、P 暫停、Esc 離開全螢幕、F 全螢幕、Q 結束
 """
 import math
 import queue
+import random
 import socket
 import sys
 import threading
 import time
 import tkinter as tk
+import zlib
 
 import numpy as np
 from OpenGL import GL
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from pyopengltk import OpenGLFrame
 
 VISUAL_TCP = ("127.0.0.1", 47601)  # band_mrt2.py 送資料的位置
@@ -34,6 +36,7 @@ uniform vec3 uW;
 uniform vec4 uLv;
 uniform vec2 uObjOff;
 uniform float uObjAF,uObjBF;
+uniform float uHue,uHueA;   /* 自訂風格：整個畫面轉成另一個色相 */
 
 float hash(vec2 p){p=fract(p*vec2(123.34,456.21));p+=dot(p,p+45.32);return fract(p.x*p.y);}
 float noise(vec2 p){vec2 i=floor(p),f=fract(p);vec2 u=f*f*(3.-2.*f);
@@ -69,6 +72,11 @@ vec3 pal(float t,vec3 c0,vec3 c1,vec3 c2,vec3 c3){
  return mix(c2,c3,(t-.66)/.34);
 }
 vec3 w3(vec3 a,vec3 b,vec3 c){return a*uW.x+b*uW.y+c*uW.z;}
+vec3 hue(vec3 c,float a){   /* 在 YIQ 色彩空間轉色相，亮度不變 */
+ vec3 y=mat3(.299,.596,.211,.587,-.274,-.523,.114,-.322,.312)*c;
+ float h=atan(y.z,y.y)+a,ch=length(y.yz);
+ return max(mat3(1.,1.,1.,.956,-.272,-1.106,.621,-.647,1.703)*vec3(y.x,ch*cos(h),ch*sin(h)),0.);
+}
 
 vec3 neo(vec2 uv,vec2 p){
  float d0=length(p);
@@ -160,11 +168,12 @@ void main(){
  if(uMix<.999)a=neo(uv,p);
  if(uMix>.001)b=trap(uv,p);
  vec3 col=mix(a,b,uMix);
+ col=mix(col,hue(col,uHue),uHueA);
  col*=mix(.28+.07*sin(uTime*.6),1.,uStarted);   /* 音樂開始前：暗、慢慢呼吸 */
  col=col/(1.+col*.25);
  col=pow(col,vec3(.95));
  vec4 tt=texture2D(uText,vec2(uv.x,1.-uv.y));   /* r = 提示文字、a = 它的描邊、g = 光柱名稱、b = 名稱的描邊 */
- col*=1.-.7*max(tt.b*uStarted,tt.a*uTextA);
+ col*=1.-.88*max(tt.b*uStarted,tt.a*uTextA);
  float tx=max(tt.r*uTextA,tt.g*uStarted);
  gl_FragColor=vec4(mix(col,vec3(.96,.92,.85),tx),1.);
 }
@@ -172,8 +181,10 @@ void main(){
 
 UNIFORMS = ["uRes", "uTime", "uBeat", "uFlow", "uMix", "uKickAge", "uStarted", "uTextA", "uKick", "uSnare", "uHat",
             "uBass", "uKeys", "uTone", "uMel", "uMelPos", "uHum", "uObjA", "uObjB", "uText", "uW", "uLv", "uObjOff",
-            "uObjAF", "uObjBF"]
+            "uObjAF", "uObjBF", "uHue", "uHueA"]
 NEO_OBJECTS, TRAP_OBJECTS = ["candle", "glass", "leaf", "lava"], ["cassette", "pyramid", "sub"]
+EXTRA_OBJECTS = ["moon", "star", "spiral", "eye"]  # 只給自訂風格隨機挑
+PRESET_STYLES = ["neo soul", "memphis rap"]  # 其他名稱都是自訂風格，依名稱決定隨機的顏色和圖案
 
 
 def draw_object(name: str) -> np.ndarray:
@@ -232,6 +243,23 @@ def draw_object(name: str) -> np.ndarray:
             d.ellipse((128 - r, 128 - r, 128 + r, 128 + r), fill=G(v))
         for x, y in ((46, 46), (210, 46), (46, 210), (210, 210)):
             d.ellipse((x - 5, y - 5, x + 5, y + 5), fill=G(.8))
+    elif name == "moon":
+        d.ellipse((40, 40, 216, 216), fill=G(.9))
+        d.ellipse((86, 22, 246, 182), fill=0)
+        for x, y, r in ((200, 60, 5), (222, 120, 3), (180, 200, 4)):
+            d.ellipse((x - r, y - r, x + r, y + r), fill=G(.7))
+    elif name == "star":
+        pts = [(128 + (100 if j % 2 == 0 else 42) * math.sin(j * math.pi / 5),
+                128 - (100 if j % 2 == 0 else 42) * math.cos(j * math.pi / 5)) for j in range(10)]
+        d.polygon(pts, fill=G(.85))
+        d.ellipse((108, 108, 148, 148), fill=G(1))
+    elif name == "spiral":
+        pts = [(128 + 6 * a * math.cos(a), 128 + 6 * a * math.sin(a)) for a in np.linspace(0, 6 * math.pi, 300)]
+        d.line(pts, fill=G(.9), width=10)
+    elif name == "eye":
+        d.polygon([(20, 128), (70, 76), (128, 60), (186, 76), (236, 128), (186, 180), (128, 196), (70, 180)], fill=G(.5))
+        d.ellipse((88, 88, 168, 168), fill=G(.9))
+        d.ellipse((112, 112, 144, 144), fill=G(.1))
     return np.asarray(img)[::-1].copy()  # OpenGL 的貼圖第一列在下面
 
 
@@ -239,7 +267,7 @@ BEAM_X = (.167, .333, .5, .667, .833)  # 五道光柱的位置，和 shader 的 
 
 
 def draw_text(size: tuple, big: str, small: str = "", labels: tuple = ()) -> np.ndarray:
-    """RGBA 貼圖：R = 中間的提示文字、A = 它的深色描邊；G = 光柱底下的名稱、B = 名稱的描邊（亮的光柱上也看得清楚）。"""
+    """RGBA 貼圖：R = 中間的提示文字、A = 它的陰影；G = 光柱底下的名稱、B = 名稱的陰影（柔和的暗影，亮的光柱上也看得清楚）。"""
     img, lab, edge, msg_edge = (Image.new("L", size, 0) for _ in range(4))
     d = ImageDraw.Draw(img)
     try:
@@ -249,13 +277,14 @@ def draw_text(size: tuple, big: str, small: str = "", labels: tuple = ()) -> np.
     de = ImageDraw.Draw(msg_edge)
     for text, y, font, fill in ((big, .46, f1, 255), (small, .56, f2, 190)):
         if text:
-            de.text((size[0] / 2, size[1] * y), text, fill=255, font=font, anchor="mm", stroke_width=4, stroke_fill=255)
+            de.text((size[0] / 2, size[1] * y), text, fill=255, font=font, anchor="mm")
             d.text((size[0] / 2, size[1] * y), text, fill=fill, font=font, anchor="mm")
     for x, name in zip(BEAM_X, labels):
         pos = (size[0] * x, size[1] * .955)
-        ImageDraw.Draw(edge).text(pos, name, fill=255, font=f2, anchor="mm", stroke_width=4, stroke_fill=255)
+        ImageDraw.Draw(edge).text(pos, name, fill=255, font=f2, anchor="mm")
         ImageDraw.Draw(lab).text(pos, name, fill=255, font=f2, anchor="mm")
-    return np.stack([np.asarray(img), np.asarray(lab), np.asarray(edge), np.asarray(msg_edge)], axis=2)
+    shadow = lambda m, r, k: np.minimum(255, np.asarray(m.filter(ImageFilter.GaussianBlur(r)), np.float32) * k).astype(np.uint8)
+    return np.stack([np.asarray(img), np.asarray(lab), shadow(edge, 5, 6), shadow(msg_edge, 7, 4)], axis=2)
 
 
 class Show:
@@ -269,10 +298,13 @@ class Show:
         self.kick_age, self.tone, self.tone_t, self.mel_pos, self.mel_pos_t = 9.0, .2, .2, .5, .5
         self.started, self.started_f, self.notes, self.prev = False, 0.0, set(), {}
         self.text, self.text_t, self.text_a, self.text_until = None, ("樂團準備中…", ""), 0.0, 1e9
-        self.style_names, self.conn = ["neo soul", "memphis rap"], None  # conn：連到樂團的 socket，按鍵時送指令回去
+        self.conn = None  # 連到樂團的 socket，按鍵時送指令回去
         self.labels, self.labels_on = ("鼓", "貝斯", "你", "Rhodes", "吉他＋鐘"), False  # 光柱名稱（樂團會更新），S 鍵顯示/隱藏
         self.instruments = ["Rhodes", "電吉他", "電貝斯", "鼓", "弦樂", "鐘"]  # 1–6 靜音鍵對應的樂器名稱（樂團會更新）
         self.muted, self.paused, self.typing = set(), False, None  # muted：靜音中的鍵號；typing：正在打的風格（None = 沒在打字）
+        self.style, self.style_list = "neo soul", list(PRESET_STYLES)  # 目前的風格、選單裡的風格（樂團會送來）
+        self.hue = self.hue_next = self.hue_a = 0.0  # 自訂風格的色相（弧度）與強度
+        self.custom_objects = None  # 自訂風格的圖案（None = 用原本的）
 
     def onset(self, key: str, v: float, ratio: float, floor: float) -> bool:
         p = self.prev.get(key, 0.0)
@@ -285,10 +317,10 @@ class Show:
     def hint(self) -> None:
         """游標移動時提醒按鍵（開始前的等待畫面本來就寫著）。"""
         if self.started:
-            self.show_text(self.style_names[self.scene], "空白鍵：切換風格   Enter：輸入風格   1–6：樂器靜音   S：光柱名稱   P：暫停   Q：結束", 3)
+            self.show_text(self.style, "點一下畫面（或 M）：選風格   Enter：輸入風格   1–6：樂器靜音   S：光柱名稱   P：暫停   Q：結束", 3)
 
     def send(self, command: str) -> None:
-        """把指令送回樂團：s 切換風格、m1–m6 樂器靜音、p 暫停/繼續、q 結束、t <文字> 新風格。"""
+        """把指令送回樂團：g <風格> 切換風格、m1–m6 樂器靜音、p 暫停/繼續、q 結束、t <文字> 新風格。"""
         try:
             if self.conn:
                 self.conn.sendall((command + "\n").encode())
@@ -300,6 +332,20 @@ class Show:
         self.send(f"m{n}")
         self.show_text(f"{self.instruments[n - 1]} {'靜音' if n in self.muted else '關閉靜音'}",
                        "靜音中：" + "、".join(self.instruments[i - 1] for i in sorted(self.muted)) if self.muted else "", 3)
+
+    def set_style(self, name: str) -> None:
+        """換風格時決定畫面：原本的兩種用原本的配色和圖案；自訂風格依名稱算出固定的隨機色相和 3 個圖案。"""
+        self.style = name
+        if name in PRESET_STYLES:
+            self.hue_next, self.custom_objects = None, None
+        else:
+            rng = random.Random(zlib.crc32(name.encode()))
+            self.hue_next = rng.uniform(.6, 5.7)  # 避開接近原本色相的角度
+            self.custom_objects = rng.sample(NEO_OBJECTS + TRAP_OBJECTS + EXTRA_OBJECTS, 3)
+
+    def choose(self, name: str) -> None:
+        """選單選了一個風格。"""
+        self.send(f"g {name}")
 
     def submit(self) -> None:
         """打字結束（Enter）：把風格描述送給樂團，樂團準備好後在下一段切過去。"""
@@ -314,7 +360,7 @@ class Show:
         if self.paused:
             self.show_text("暫停", "按 P 繼續")
         else:
-            self.show_text(self.style_names[self.scene], "", 2)
+            self.show_text(self.style, "", 2)
 
     def handle(self, line: str) -> None:
         if line.startswith("f "):
@@ -340,9 +386,13 @@ class Show:
         elif line.startswith("w|"):  # 等待觀眾彈和弦：w|目前選的風格|配色
             style, scene = line[2:].split("|")
             self.started, self.scene = False, int(scene)
-            self.show_text("彈一個和弦，樂團就會跟著你", f"風格：{style}（空白鍵切換、Enter 輸入風格）")
+            self.set_style(style)
+            self.show_text("彈一個和弦，樂團就會跟著你", f"風格：{style}（點一下畫面選風格）")
         elif line.startswith("c|"):  # 剛切換了風格
+            self.set_style(line[2:])
             self.show_text(line[2:], "風格切換", 4)
+        elif line.startswith("y|"):  # 選單裡的風格
+            self.style_list = line[2:].split("|")
         elif line.startswith("t|"):  # 樂團要顯示的文字：t|大字|小字|秒數
             big, small, seconds = line[2:].split("|")
             self.show_text(big, small, float(seconds))
@@ -355,6 +405,7 @@ class Show:
         elif line.startswith("k|"):  # 開始：調名|風格
             key_name, style = line[2:].split("|")
             self.started = True
+            self.set_style(style)
             self.show_text(key_name, style, 4)
 
     def step(self) -> None:
@@ -373,6 +424,12 @@ class Show:
         self.tone += (self.tone_t - self.tone) * min(1, dt * 1.5)
         self.mel_pos += (self.mel_pos_t - self.mel_pos) * min(1, dt * 12)
         self.text_a += ((1.0 if now < self.text_until or self.typing is not None else 0.0) - self.text_a) * min(1, dt * 2)
+        if self.hue_next is not None and abs(self.hue_next - self.hue) > 1e-3 and self.hue_a > .02:
+            self.hue_a += (0 - self.hue_a) * min(1, dt * 1.5)  # 換到另一個自訂色：先淡出舊的
+        else:
+            if self.hue_next is not None:
+                self.hue = self.hue_next
+            self.hue_a += ((0.0 if self.hue_next is None else 1.0) - self.hue_a) * min(1, dt * .8)
         self.kick *= math.exp(-dt * (8 if sc else 3))
         self.snare *= math.exp(-dt * 9)
         self.hat *= math.exp(-dt * 14)
@@ -453,11 +510,12 @@ class VJ(OpenGLFrame):
         # 朦朧物件：neo 每 16 拍換一個、trap 每 32 拍，淡入淡出
         fades = []
         for unit, (objs, per) in enumerate(((NEO_OBJECTS, 16), (TRAP_OBJECTS, 32))):
+            objs = s.custom_objects if s.custom_objects and unit == s.scene else objs  # 自訂風格用它自己的隨機圖案
             k, f = divmod(s.beats / per, 1)
-            i = int(k) % len(objs)
-            if i != self.obj_idx[unit]:
-                self.obj_idx[unit] = i
-                self.upload(unit, draw_object(objs[i]))
+            name = objs[int(k) % len(objs)]
+            if name != self.obj_idx[unit]:
+                self.obj_idx[unit] = name
+                self.upload(unit, draw_object(name))
             a = min(1, f * 4, (1 - f) * 4)
             fades.append(a * a * (3 - 2 * a))
         shown = (s.typing + "▏", "輸入一個風格（英文描述效果最好）  Enter 送出、Esc 取消") if s.typing is not None else s.text_t
@@ -472,7 +530,8 @@ class VJ(OpenGLFrame):
         for n, v in (("uTime", t), ("uBeat", s.beats), ("uFlow", s.flow), ("uMix", s.mix), ("uKickAge", s.kick_age),
                      ("uStarted", s.started_f), ("uTextA", s.text_a), ("uKick", s.kick), ("uSnare", s.snare),
                      ("uHat", s.hat), ("uBass", s.bass), ("uKeys", s.pad), ("uTone", s.tone), ("uMel", s.mel),
-                     ("uMelPos", s.mel_pos), ("uHum", s.hum), ("uObjAF", fades[0]), ("uObjBF", fades[1])):
+                     ("uMelPos", s.mel_pos), ("uHum", s.hum), ("uObjAF", fades[0]), ("uObjBF", fades[1]),
+                     ("uHue", s.hue), ("uHueA", s.hue_a)):
             GL.glUniform1f(U[n], v)
         vv = s.beats / (128 if s.scene else 64)  # 三種配色變化，每 64/128 拍輪替
         vi, vf = int(vv) % 3, vv % 1
@@ -529,6 +588,7 @@ def receive(show: Show, stop: threading.Event, on_lost) -> None:
 
 def demo(show: Show, stop: threading.Event) -> None:
     """沒有樂團時用的假資料：等 4 秒 → 開始 → 固定鼓點，每 8 小節換風格，偶爾彈音。"""
+    show.lines.put("y|neo soul|memphis rap|rainy night lo-fi")
     show.lines.put("w|neo soul|0")
     stop.wait(4)
     show.lines.put("k|D minor|neo soul")
@@ -588,8 +648,8 @@ def main() -> None:
         elif key == "q":
             show.send("q")  # 連樂團一起結束
             root.destroy()
-        elif key == "space":
-            show.send("s")
+        elif key == "m":
+            open_menu()
         elif key == "p":
             show.pause()
         elif key == "s":
@@ -597,7 +657,18 @@ def main() -> None:
         elif e.char in ("1", "2", "3", "4", "5", "6"):
             show.mute(int(e.char))
 
+    def open_menu(e=None) -> None:
+        """風格選單：現有的風格（● = 現在的），最後一項是輸入新風格。"""
+        menu = tk.Menu(root, tearoff=0, font=("Microsoft JhengHei", 20))
+        for name in show.style_list:
+            menu.add_command(label=("● " if name == show.style else "    ") + name, command=lambda n=name: show.choose(n))
+        menu.add_separator()
+        menu.add_command(label="＋ 輸入新風格…", command=lambda: setattr(show, "typing", ""))
+        x, y = (e.x_root, e.y_root) if e else (root.winfo_rootx() + root.winfo_width() // 2, root.winfo_rooty() + root.winfo_height() // 3)
+        menu.tk_popup(x, y)
+
     root.bind("<Key>", on_key)
+    root.bind("<Button-1>", open_menu)
     root.bind("<Motion>", lambda e: show.hint())
     if "--demo" in args:
         threading.Thread(target=demo, args=(show, stop), daemon=True).start()

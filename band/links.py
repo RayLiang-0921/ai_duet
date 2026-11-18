@@ -1,4 +1,4 @@
-"""對外連線：送資料給視覺（並接收空白鍵）、觀眾的音符、Windows 端的 MIDI 橋接與啟動 Windows 程式。"""
+"""對外連線：送資料給視覺（並接收選單和按鍵的指令）、觀眾的音符、Windows 端的 MIDI 橋接與啟動 Windows 程式。"""
 import os
 import queue
 import socket

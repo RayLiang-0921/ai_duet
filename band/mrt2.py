@@ -91,6 +91,12 @@ class StyleBank:
                 self.tok[key] = list(self.mrt.tokenize_style(e))
         return self.tok[key]
 
+    def load_encoder(self) -> None:
+        """載入文字模型（第一次轉換要 18 秒）。風格都在硬碟快取時，開機不會用到它；要是拖到演出中第一次打字才載入，
+        會卡住生成好幾秒、造成斷音，所以開機時在背景先載好。"""
+        with self.lock:
+            self.mrt.embed_style("warm up")
+
     def get(self, text: str, other: "str | None" = None, w: float = 0.0) -> "list | None":
         """已經算好的 token；還沒算好就回傳 None（不等）。"""
         return self.tok.get((text, other, w))

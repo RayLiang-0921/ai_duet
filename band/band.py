@@ -61,34 +61,65 @@ def main() -> None:
         pass
 
     # ---- 啟動其他程式、載入模型 ----
-    styles = list(STYLES)  # 空白鍵輪流切換的順序；打字新增的風格會加在後面
+    styles = list(STYLES)  # 選單裡的風格；自訂風格（custom_styles.txt、觀眾打的）會加在後面
     pan = {a: pan_gains(PAN[a]) for a in GAINS}
     stop, paused = threading.Event(), threading.Event()
     link = VisualLink(stop)
     visual = None if "--no-visual" in sys.argv else start_windows("vj_tk.py")  # 視覺先開，載入模型時就看得到
+
+    def progress(step: str) -> None:  # 載入進度：終端機和視覺畫面都顯示
+        print(step, flush=True)
+        link.send(f"t|樂團準備中…|{step}|600")
+
+    try:  # 先確認聲音送得出去；WSLg 的音效伺服器有時會不見，不先檢查的話會整場沒聲音卻沒有任何提示
+        pasimple.PaSimple(pasimple.PA_STREAM_PLAYBACK, pasimple.PA_SAMPLE_FLOAT32LE, 2, 48000, app_name="ai_duet_check").close()
+    except Exception:
+        print("⚠ 沒有聲音輸出：WSL 的音效伺服器（WSLg）沒有回應。請關掉這個視窗，"
+              "在 Windows 命令列執行 wsl --shutdown，再重開 run_band.bat", flush=True)
+        for _ in range(150):  # 等視覺連上（最多 15 秒）再顯示
+            if link.clients:
+                break
+            time.sleep(0.1)
+        link.send("t|沒有聲音輸出|WSL 的音效伺服器沒有回應：請執行 wsl --shutdown 後重開 run_band.bat|600")
+        time.sleep(15)
+        stop.set()
+        if visual:
+            visual.terminate()
+        return
+
     groove_python, groove = os.path.expanduser(GROOVE_PYTHON), None
-    if os.path.exists(groove_python):
-        groove = subprocess.Popen([groove_python, os.path.join(ROOT, "groove_server.py")], stdin=subprocess.DEVNULL)
+    if os.path.exists(groove_python):  # TensorFlow 的大量警告寫進紀錄檔，終端機只留「就緒」那一行
+        log = os.path.expanduser("~/.cache/ai_duet/groove.log")
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        groove = subprocess.Popen([groove_python, "-W", "ignore", os.path.join(ROOT, "groove_server.py")],
+                                  stdin=subprocess.DEVNULL, stderr=open(log, "w"))
     else:
         print(f"[鼓手] 找不到 {GROOVE_PYTHON}，鼓只用鼓機的 pattern", flush=True)
     ready = {}  # 鼓手（載入所有鼓組約 9 秒）在背景準備，和載入模型同時進行
     loader = threading.Thread(target=lambda: ready.update(drummer=Drummer(int(time.time()))))
     loader.start()
+    progress("1/4 載入 MRT2 模型")
     mrt = tm.MagentaRT2Jax(size="mrt2_small", temperature=TEMPERATURE)
     band = BatchedMRT2(mrt, len(AGENTS))
     bank = StyleBank(mrt)
-    for st in STYLES:  # 每種風格每個樂器的風格 token 先準備好（第一次開機約 30 秒，之後從硬碟讀）
+    encoder = threading.Thread(target=bank.load_encoder)  # 文字模型在背景載入（約 18 秒），和下面的準備、編譯同時進行
+    encoder.start()
+    progress("2/4 準備每種風格的樂器（第一次約 30 秒，之後很快）")
+    for st in STYLES:  # 每種風格每個樂器的風格 token 先準備好（之後從硬碟讀）
         for a in AGENTS:
             for inst in pool(a, st):
                 bank.warm(prompt(a, st, inst))
 
     # 先編譯，人類開始彈時就不用等。要算兩次：第二次的狀態來自第一次的輸出，型別略有不同，JAX 會再編譯一次（約 5 秒）
+    progress("3/4 編譯（第一次約 4 分鐘，之後約 1 分鐘）")
     tok0 = {a: bank.get(prompt(a, styles[0], pool(a, styles[0])[0])) for a in AGENTS}
     rows = [band.frame_row([agent_conditioning(a, f, 0, "major", tok0, (set(), set())) for a in AGENTS])
             for f in range(FRAMES_PER_CALL)]
     _, state = band.generate(rows, band.new_state(0))
     band.generate(rows, state)
+    progress("4/4 鼓手與自訂風格")
     loader.join()
+    encoder.join()
     drummer = ready["drummer"]
     drummer.prepare(0)  # 第一段先排好，開始時不用等
 
@@ -108,6 +139,7 @@ def main() -> None:
                 for inst in pool(a, name):
                     bank.warm(prompt(a, name, inst))
             styles.append(name)
+            link.send("y|" + "|".join(styles))
         return name
 
     def add_style(text: str, base: str) -> None:
@@ -120,6 +152,7 @@ def main() -> None:
             return
         link.send(f"t|{cleaned[:40]}|風格準備中…{'（拿掉了：' + '、'.join(removed) + '）' if removed else ''}|30")
         known, t = cleaned[:40] in STYLES, time.perf_counter()
+        print(f"✍ 開始準備「{cleaned[:40]}」", flush=True)
         name = make_style(cleaned, base)
         if not known:
             print(f"✍ 新風格「{name}」準備好了（{time.perf_counter() - t:.1f} 秒，沿用 {STYLES[name]['base']} 的鼓和樂器）", flush=True)
@@ -127,7 +160,7 @@ def main() -> None:
                 print(f"{cleaned} | {STYLES[name]['base']}", file=f)
         new_styles.put(name)
 
-    # custom_styles.txt：事先寫好、或之前打過的自訂風格，開機就準備好，空白鍵輪換得到（演出中不用打字）
+    # custom_styles.txt：事先寫好、或之前打過的自訂風格，開機就準備好，選單裡選得到（演出中不用打字）
     for line in open(CUSTOM_STYLES, encoding="utf-8") if os.path.exists(CUSTOM_STYLES) else ():
         text, _, base = line.split("#")[0].partition("|")
         cleaned, _ = clean_style(text.strip())
@@ -137,7 +170,8 @@ def main() -> None:
         print(f"自訂風格：{'、'.join(styles[2:])}", flush=True)
 
     def commands(style: str) -> list:
-        """視覺視窗送來的指令：q 結束、p 暫停/繼續、m<n> 切靜音、t <文字> 新風格，在這裡處理；其他（s = 切換風格）回傳。"""
+        """視覺視窗送來的指令：q 結束、p 暫停/繼續、m<n> 切靜音、t <文字> 新風格在這裡處理；
+        g <風格>（選單選的風格）回傳那個風格名稱的清單。"""
         out = []
         while not link.commands.empty():
             c = link.commands.get()
@@ -153,19 +187,18 @@ def main() -> None:
             elif c.startswith("t ") and c[2:].strip():
                 print(f"✍ 觀眾輸入風格：{c[2:].strip()}", flush=True)
                 threading.Thread(target=add_style, args=(c[2:].strip(), style), daemon=True).start()
-            else:
-                out.append(c)
+            elif c.startswith("g ") and c[2:] in STYLES:
+                out.append(c[2:])
         return out
 
     def wait_for_chord(style: str) -> tuple:
-        """等觀眾彈第一個和弦；期間按空白鍵（或打字）可以換起始風格。回傳 (起始風格, 和弦) 或 (風格, None) = 被結束。"""
-        print(f"🎹 請彈一個和弦開始（需要根音和三度音）；在視覺視窗按空白鍵選風格，目前：{style}", flush=True)
+        """等觀眾彈第一個和弦；期間可以用選單（或打字）換起始風格。回傳 (起始風格, 和弦) 或 (風格, None) = 被結束。"""
+        print(f"🎹 請彈一個和弦開始（需要根音和三度音）；點一下視覺畫面可以選風格，目前：{style}", flush=True)
+        link.send("y|" + "|".join(styles))
         link.send(f"w|{style}|{STYLES[style]['scene']}")
         key = None
         while not stop.is_set() and key is None:
-            new = None
-            if "s" in commands(style):
-                new = styles[(styles.index(style) + 1) % len(styles)]
+            new = next(iter(commands(style)[-1:]), None)
             while not new_styles.empty():
                 new = new_styles.get()
             if new:
@@ -210,12 +243,13 @@ def main() -> None:
 
         while not stop.is_set():
             # ---- 觀眾的輸入 ----
-            new = None
-            if "s" in commands(style):
-                new = styles[(styles.index(pending or style) + 1) % len(styles)]
+            new = next(iter(commands(style)[-1:]), None)  # 選單選的風格
             while not new_styles.empty():
                 new = new_styles.get()
-            if new and new != style:
+            if new == style and pending:  # 選回現在的風格 = 取消切換
+                pending = None
+                link.send(f"c|{style}")
+            elif new and new != style:
                 pending, swap = new, {}
                 next_lineup = plan_switch(pending)
                 print(f"🔀 下一段開頭切換到 {pending}", flush=True)
@@ -278,6 +312,8 @@ def main() -> None:
             t0 = time.perf_counter()
             audio, state = band.generate(rows, state)
             gen_ms.append((time.perf_counter() - t0) * 1000 / FRAMES_PER_CALL)
+            if gen_ms[-1] > 60:  # 一批特別慢（會斷音）：印出來，方便對照當時發生什麼事
+                print(f"⚠ 第 {frame * 0.04:.1f} 秒這一批生成很慢：每幀 {gen_ms[-1]:.0f} ms", flush=True)
             level = {a: min(2.0, max(0.5, LEVEL / lineup[a][2])) for a in AGENTS}  # 每種樂器拉到差不多大聲
             for k in range(FRAMES_PER_CALL):
                 goal = lambda a: 0.0 if a in muted else (1.0 if sounding else target[a])  # 手動靜音優先；人類彈琴時全員回來
@@ -303,6 +339,14 @@ def main() -> None:
             rec.close()
 
     def player() -> None:
+        try:
+            play()
+        except Exception as e:  # 音效伺服器斷了：說清楚再結束，而不是無聲地卡著
+            print(f"⚠ 聲音送不出去（{e}）：請在 Windows 命令列執行 wsl --shutdown，再重開 run_band.bat", flush=True)
+            link.send("t|聲音送不出去|請執行 wsl --shutdown 後重開 run_band.bat|600")
+            stop.set()
+
+    def play() -> None:
         while not stop.is_set() and not audio_q.full():  # 存滿再開始播
             stop.wait(0.01)
         # 音效緩衝設為 2 幀；預設值約 1 秒，延遲太大
