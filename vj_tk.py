@@ -258,7 +258,7 @@ class Show:
         self.started, self.started_f, self.notes, self.prev = False, 0.0, set(), {}
         self.text, self.text_t, self.text_a, self.text_until = None, ("樂團準備中…", ""), 0.0, 1e9
         self.style_names, self.conn = ["neo soul", "memphis rap"], None  # conn：連到樂團的 socket，按鍵時送指令回去
-        self.instruments, self.muted, self.paused = ["rhodes", "guitar", "bass", "strings", "bell", "drums"], set(), False
+        self.instruments, self.muted, self.paused = ["rhodes", "guitar", "bass", "drums", "strings", "bell"], set(), False
 
     def onset(self, key: str, v: float, ratio: float, floor: float) -> bool:
         p = self.prev.get(key, 0.0)
