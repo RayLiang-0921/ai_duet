@@ -15,7 +15,7 @@ STYLES = {  # 每種風格：prompt = 接在樂器提示詞後的風格描述（
             # kits = 可用的鼓組（samples/ 底下的資料夾）、bass808 = 貝斯改由跟著大鼓的 808 取樣打、scene = 視覺的配色（0 或 1）
             # lean = 自動判斷觀眾打的風格比較像哪一種時，加給這種的分數（文字相似度，見 band/band.py 的 pick_base）
             # 觀眾打字新增的風格會在執行時加進來（band/band.py 的 add_style），沿用最像的那種風格的設定
-    "neo soul": {"hat_div": 2, "scene": 0, "kits": ["neo soul", "rnb_2000s_soul_jazz", "band sound"]},
+    "neo soul": {"hat_div": 2, "scene": 0, "kits": ["neo soul", "rnb_2000s_soul_jazz"]},
     "memphis rap": {"hat_div": 4, "scene": 1, "prompt": "dark and moody", "mode": "minor",  # 不寫 rap（會帶出鼓），一律小調
                     "kits": ["memphis rap", "trap", "modern trap"], "bass808": True,
                     "lean": -0.04},  # 中性的描述（bossa nova、民謠）本來就稍微比較像 memphis rap，要明顯比較像才選它

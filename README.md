@@ -17,7 +17,7 @@
 已完成，可以現場演出：
 - 五個 AI 樂手加一個鼓手同時即時生成。RTX 3050 Laptop 上每幀約 34–37 ms（預算 40 ms），測試中 0 次斷音；按鍵到聽到樂團回應約 0.6 秒，觀眾自己彈的鋼琴聲是立刻發出的。
 - 調性跟著觀眾的和弦；和弦進行會自己走，也可以被觀眾的和弦帶走；按住音時所有樂器都跟著彈。
-- 兩種內建風格加自訂風格（`custom_styles.txt`），用選單在演出中切換，下一段生效。
+- 兩種內建風格加自訂風格（`custom_styles.txt`），用選單在演出中切換，下一段生效。自訂風格有暗的（rainy night lo-fi、haunting dark ambient），也有明亮的（cheerful smooth jazz、bright acoustic folk、upbeat 70s funk、sunny bossa nova）。明亮的四種都用 neo soul 的每個樂器試過，鼓聲 ≤ 0.28、人聲 ≤ 0.31；sunny tropical summer 會漏鼓聲，breezy yacht rock 會帶出人聲，都沒有收。
 - 鼓組在 `samples/` 的音色包之間輪換；memphis 的 808 會自動調到和弦根音。
 - 監聽（`band/guard.py`）會擋掉 AI 樂器偶爾冒出來的鼓聲和人聲。
 - 視覺：每個聲音一道光柱；自訂風格有自己的顏色和圖案；可以調亮度、暫停、靜音任一樂器、結束整個樂團。

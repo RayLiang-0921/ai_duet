@@ -3,12 +3,6 @@ __pycache__/
 .pytest_cache/
 *.pyc
 
-# generated outputs
-output*.wav
-test_*.wav
-mrt2_test_output.wav
-duet_output.mid
-
 # overnight reports and logs (tools/explore.py, tools/soak.py)
 reports/
 
