@@ -155,6 +155,11 @@ class Drummer:
     def pick_kit(self, style: str) -> None:
         """換鼓組：從這種風格的鼓組裡隨機挑一個（盡量不跟現在的一樣），並在背景重新載入它的另一套取樣，下次輪到時音色又不同。"""
         names = [n for n in STYLES[style]["kits"] if n in self.kits]
+        if not names:  # samples/ 裡沒有這種風格的鼓組（見 samples/README.md）：鼓安靜，其他樂器照常
+            if self.kit_style != style:
+                print(f"🥁 samples/ 裡沒有 {style} 的鼓組，鼓先安靜", flush=True)
+            self.kit, self.kit_style = {r: np.zeros((480, 2), np.float32) for r in KIT_ROLES} | {"name": "", "808": None}, style
+            return
         name = self.rng.choice([n for n in names if not self.kit or n != self.kit["name"]] or names)
         self.kit, self.kit_style = self.kits[name], style
         self.last808 = self.kit["808"] or self.last808

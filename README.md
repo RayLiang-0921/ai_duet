@@ -66,7 +66,7 @@ Windows                                   WSL2 (Ubuntu)
 | `groove_server.py` | 鼓手的人味：收鼓機的 2 小節 pattern，用 GrooVAE 回傳演奏（獨立程序、自己的環境） |
 | `vj_tk.py` | 視覺（Windows 端，tkinter + OpenGL）；`--demo` 可以不接樂團單獨測試 |
 | `custom_styles.txt` | 自訂風格：一行一個「風格描述 \| 根據的風格」，開機就準備好、選單裡選得到；開始演奏前打的風格會自動加進來 |
-| `samples/<鼓組>/` | 鼓組取樣（見下方「鼓組」） |
+| `samples/<鼓組>/` | 鼓組取樣，不包含在 repo 裡（見下方「鼓組」和 `samples/README.md`） |
 | `test_mrt2.py` | 共用工具（時間計算、MIDI 接收、模型載入）；也可以單獨跑一個樂手 |
 | `tools/audition.py` | 試音：候選樂器在兩種風格各生成 20 秒，量走音、跟拍、鼓聲、人聲、低頻、音量 |
 | `tools/explore.py` | 大量試音（整晚跑用）：約 50 種新樂器在每種風格試 2 次，寫成報告 |
@@ -134,10 +134,12 @@ python -m venv venv
 
 ### 鼓組
 
-`samples/neo soul/` 和 `samples/memphis rap/` 是挑好的鼓組，用固定檔名（`kick.wav`、`snare.wav`、`hihat.wav`、`openhat.wav`、`rim.wav`、`808.wav`），有包含在這個 repo 裡。
+鼓聲取樣有授權限制，所以不包含在這個 repo 裡，要自己放進 `samples/`。做法見 [samples/README.md](samples/README.md)。
 
-每種風格還可以輪換其他音色包，寫在 `band/settings.py` 的 `STYLES[...]["kits"]`，例如 `rnb_2000s_soul_jazz`、`band sound`、`trap`、`modern trap`。這些整包音色包檔案很大、也有授權限制，所以沒有放進 repo；沒有的資料夾會自動跳過。
-要加的話，把音色包解壓到 `samples/<名稱>/`，鼓手會照子資料夾名稱自動找大鼓、小鼓、hi-hat、open hat、rim、808（規則在 `band/drummer.py` 的 `KIT_ROLES`）。
+最簡單的做法：每種風格一個資料夾，例如 `samples/neo soul/`，裡面放固定檔名的 `kick.wav`、`snare.wav`、`hihat.wav`、`openhat.wav`、`rim.wav`；memphis 另外放 `808.wav`。
+也可以直接放整包音色包，鼓手會照子資料夾名稱自動找出各個角色。
+
+每種風格可以用哪些鼓組，寫在 `band/settings.py` 的 `STYLES[...]["kits"]`；沒有的資料夾會自動跳過。某種風格一個鼓組都沒有時，鼓會安靜，其他樂器照常演奏。
 
 ## 執行與演奏
 
