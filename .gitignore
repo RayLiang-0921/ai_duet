@@ -11,3 +11,8 @@ duet_output.mid
 
 # overnight reports and logs (tools/explore.py, tools/soak.py)
 reports/
+
+# full sample packs stay local (size and licence); only the curated kits are tracked
+samples/*
+!samples/neo soul/
+!samples/memphis rap/
